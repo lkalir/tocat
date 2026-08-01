@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/liamk/tocat/tocat.schema.json",
+  "title": "tocat config",
+  "description": "Configuration for tocat. Values here are overridden by command-line flags.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "$ref": "#/$defs/endpoint",
+      "description": "Where to read from."
+    },
+    "sink": {
+      "$ref": "#/$defs/endpoint",
+      "description": "Where to write to."
+    },
+    "log-level": {
+      "$ref": "#/$defs/log-level",
+      "description": "Log verbosity"
+    },
+    "log": {
+      "type": "array",
+      "description": "Log destinations. Defaults to compact output on stderr.",
+      "items": { "$ref": "#/$defs/log-sink" }
+    }
+  },
+  "$defs": {
+    "log-format": {
+      "type": "string",
+      "default": "compact",
+      "enum": ["json", "pretty", "compact"]
+    },
+    "log-rotation": {
+      "type": "string",
+      "enum": ["minutely", "hourly", "daily", "never"],
+      "default": "never",
+      "description": "Log rotation interval. When set, 'path' is treated as a directory and log files will append timestamps."
+    },
+    "log-sink-stderr": {
+      "title": "stderr",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "stderr" },
+        "format": { "$ref": "#/$defs/log-format" },
+        "level": { "$ref": "#/$defs/log-level" }
+      }
+    },
+    "log-sink-file": {
+      "title": "file",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": { "const": "file" },
+        "format": { "$ref": "#/$defs/log-format" },
+        "level": { "$ref": "#/$defs/log-level" },
+        "path": { "type": "string" },
+        "truncate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Truncate existing log file. Default is to append. Ignored if not using file rotation."
+        },
+        "rotation": { "$ref": "#/$defs/log-rotation" },
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of rotated log files to retain. Older logs are deleted automatically."
+        }
+      }
+    },
+    "log-sink": {
+      "oneOf": [
+        { "$ref": "#/$defs/log-sink-stderr" },
+        { "$ref": "#/$defs/log-sink-file" }
+      ]
+    },
+    "log-level": {
+      "type": "string",
+      "default": "info",
+      "description": "Log verbosity. Overridden by -v on the command line if that asks for more, and by RUST_LOG entirely.",
+      "oneOf": [
+        { "const": "off", "description": "No output." },
+        { "const": "error", "description": "Failures only." },
+        { "const": "warn", "description": "Failures and recoverable problems." },
+        { "const": "info", "description": "Connections opened and closed. The default." },
+        { "const": "debug", "description": "Config resolution and per-transfer detail. Same as -v." },
+        { "const": "trace", "description": "Everything, including per-chunk copying. Same as -vv." }
+      ]
+    },
+    "dump-format": {
+      "type": "string",
+      "enum": ["hex", "raw-binary"],
+      "description": "Output format for endpoint dumping."
+    },
+    "dump-config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Configuration options for dumping endpoint traffic. Dumps are written regardless of log level.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "File path to dump traffic to. Omit to dump to stderr. Must not be stdout, which may carry relayed payload.",
+          "not": { "enum": ["-", "/dev/stdout", "/dev/fd/1"] }
+        },
+        "format": {
+          "$ref": "#/$defs/dump-format"
+        }
+      }
+    },
+    "endpoint": {
+      "description": "Either a URL shorthand, or a table with an explicit `type`.",
+      "oneOf": [
+        { "$ref": "#/$defs/endpoint-url" },
+        { "$ref": "#/$defs/exec-endpoint" },
+        { "$ref": "#/$defs/file-endpoint" },
+        { "$ref": "#/$defs/stdio-endpoint" },
+        { "$ref": "#/$defs/system-endpoint" },
+        { "$ref": "#/$defs/tcp-endpoint" },
+        { "$ref": "#/$defs/tcp-listen-endpoint" },
+        { "$ref": "#/$defs/unix-endpoint" },
+        { "$ref": "#/$defs/unix-listen-endpoint" }
+      ]
+    },
+    "endpoint-url": {
+      "title": "shorthand",
+      "type": "string",
+      "description": "URL form, equivalent to the table form with defaults.",
+      "examples": [
+        "tcp:127.0.0.1:9000",
+        "tcplisten:8000",
+        "listen:8000,fork",
+        "unix:/tmp/tocat.sock",
+        "unix-listen:/tmp/tocat.sock,fork,unlink,mode=660",
+        "stdio",
+        "-"
+      ]
+    },
+    "tcp-endpoint": {
+      "title": "tcp",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "addr"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["tcp", "TCP", "tcp-connect", "TCP-CONNECT", "connect", "CONNECT"],
+          "description": "tcp-connect type tag supporting standard, uppercase, and alias variations."
+        },
+        "addr": {
+          "type": "string",
+          "description": "Host and port, e.g. 127.0.0.1:9000.",
+          "examples": ["127.0.0.1:9000", "[::1]:9000"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "tcp-listen-endpoint": {
+      "title": "tcp-listen",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["tcp-listen", "TCP-LISTEN", "tcplisten", "TCPLISTEN", "listen", "LISTEN"],
+          "description": "Listen type tag supporting standard, uppercase, and alias variations."
+        },
+        "host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Host interface to bind to. Defaults to localhost."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8000,
+          "description": "Port number to listen on."
+        },
+        "fork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Spawn a new task for each incoming client connection."
+        },
+        "max-connections": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "unix-endpoint": {
+      "title": "unix",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["unix", "UNIX", "unix-connect", "UNIX-CONNECT"],
+          "description": "Unix domain socket connect tag supporting standard, uppercase, and alias variations."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path to the socket to connect to.",
+          "examples": ["/tmp/tocat.sock", "/run/app/app.sock"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "unix-listen-endpoint": {
+      "title": "unix-listen",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["unix-listen", "UNIX-LISTEN", "unixlisten", "UNIXLISTEN"],
+          "description": "Unix domain socket listen tag supporting standard, uppercase, and alias variations."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path of the socket to create and listen on.",
+          "examples": ["/tmp/tocat.sock", "/run/app/app.sock"]
+        },
+        "unlink": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove a stale socket file before binding. tocat probes the path first and refuses to unlink a socket with a live listener."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0?[0-7]{3}$",
+          "description": "Permissions applied to the socket after bind, as an octal string.",
+          "examples": ["600", "660", "666", "0660"]
+        },
+        "fork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Spawn a new task for each incoming client connection."
+        },
+        "max-connections": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "stdio-endpoint": {
+      "title": "stdio",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "stdio" },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "file-endpoint": {
+      "title": "file",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
+      "properties": {
+        "type": { "const": "file" },
+        "path": {
+          "type": "string",
+          "description": "File to read from when used as the source, or write to when used as the sink."
+        },
+        "append": {
+          "type": "boolean",
+          "default": false,
+          "description": "Append rather than overwrite. Sink only."
+        },
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create the file if it does not exist. Sink only."
+        },
+        "truncate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Truncate on open. Ignored when appending. Sink only."
+        },
+        "name": { "type": "string", "description": "Custom display name for the endpoint." },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "exec-endpoint": {
+      "title": "exec",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "argv"],
+      "properties": {
+        "type": { "const": "exec" },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Program and arguments. Passed directly to the program: no shell, no globbing, no metacharacters.",
+          "examples": [["/usr/bin/env", "cat"], ["python3", "-u", "server.py"]]
+        },
+        "name": { "type": "string", "description": "Custom display name for the endpoint." },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    },
+    "system-endpoint": {
+      "title": "system",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "command"],
+      "properties": {
+        "type": { "const": "system" },
+        "command": {
+          "type": "string",
+          "description": "Program and arguments. Runs as the user's default shell.",
+          "examples": ["echo $HOME", "cat"]
+        },
+        "name": { "type": "string", "description": "Custom display name for the endpoint." },
+        "dump": { "$ref": "#/$defs/dump-config" }
+      }
+    }
+  }
+}

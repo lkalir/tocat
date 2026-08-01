@@ -1,0 +1,10 @@
+# Rust
+/target
+
+# Nix
+.direnv/
+.envrc
+
+# Test config files
+tocat.toml
+.tocat.toml
