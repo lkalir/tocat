@@ -1,3 +1,5 @@
+//! tocat main
+
 mod cli;
 mod config;
 mod endpoint;

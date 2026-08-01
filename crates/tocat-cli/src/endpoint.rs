@@ -1,3 +1,5 @@
+//! endpoint.rs
+
 use std::{
     num::NonZeroUsize,
     os::unix::fs::{FileTypeExt, PermissionsExt},

@@ -1001,7 +1001,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "tocat"
+name = "tocat-api"
+version = "0.1.0"
+
+[[package]]
+name = "tocat-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1010,6 +1014,7 @@ dependencies = [
  "futures",
  "futures-util",
  "serde",
+ "tocat-api",
  "tokio",
  "tokio-util",
  "toml",

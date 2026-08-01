@@ -1,3 +1,5 @@
+//! shutdown.rs
+
 use tokio::sync::watch;
 use tracing::{info, warn};
 

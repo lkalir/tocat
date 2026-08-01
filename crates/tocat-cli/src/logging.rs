@@ -1,3 +1,5 @@
+//! logging.rs
+
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},

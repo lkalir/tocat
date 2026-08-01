@@ -1,3 +1,5 @@
+//! config.rs
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, bail};
