@@ -1,4 +1,10 @@
-//! shutdown.rs
+//! shutdown.rs — draining on signal.
+//!
+//! The first SIGINT/SIGTERM asks the relay to stop accepting and drain what is
+//! in flight; a second one exits immediately. Async paths observe this by
+//! awaiting [`Shutdown::recv`] in a `select!`. The blocking copy path cannot.
+//! A `spawn_blocking` task is not cancellable, so it polls
+//! [`Shutdown::is_triggered`] between chunks instead.
 
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -13,6 +19,12 @@ impl Shutdown {
         }
 
         let _ = self.0.changed().await;
+    }
+
+    /// Non-blocking check, for code that cannot await.
+    #[must_use]
+    pub fn is_triggered(&self) -> bool {
+        *self.0.borrow()
     }
 }
 

@@ -1,16 +1,16 @@
-//! logging.rs
+//! logging.rs - diagnostic logging.
+//!
+//! Sinks are declarative: any number of `[[log]]` entries, each with its own
+//! format, level and rotation, composed into one subscriber. Rotating file
+//! sinks are non-blocking and hand back a [`WorkerGuard`]; [`LoggingGuard`]
+//! holds them, and dropping it early silently truncates the log.
+//!
+//! This is *only* diagnostics. Use the `tocat-plugin-tee` for payload dumping.
 
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncWriteExt, BufWriter, Stderr},
-    sync::Mutex,
-};
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
@@ -18,148 +18,6 @@ use tracing_appender::{
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, filter::LevelFilter, fmt, fmt::writer::BoxMakeWriter, prelude::*,
 };
-
-use crate::endpoint::{DumpConfig, DumpFormat};
-
-fn stderr_dump() -> &'static Mutex<Stderr> {
-    static STDERR: OnceLock<Mutex<Stderr>> = OnceLock::new();
-    STDERR.get_or_init(|| Mutex::new(tokio::io::stderr()))
-}
-
-pub fn format_hex_dump(buf: &[u8], start_offset: u64) -> String {
-    buf.chunks(16)
-        .enumerate()
-        .map(|(offset, chunk)| {
-            let hex = chunk
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            let ascii: String = chunk
-                .iter()
-                .map(|&b| {
-                    if b.is_ascii_graphic() || b == b' ' {
-                        b as char
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-
-            format!(
-                "{:08x}  {hex:<47}  |{ascii}|",
-                start_offset + (offset * 16) as u64
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-pub type SharedDumpFile = Arc<Mutex<BufWriter<tokio::fs::File>>>;
-
-enum DumpSink {
-    Disabled,
-    Stderr,
-    File(SharedDumpFile),
-}
-
-pub struct DumpLogger {
-    label: String,
-    format: DumpFormat,
-    sink: DumpSink,
-    offset: u64,
-}
-
-impl DumpLogger {
-    pub async fn new_shared(
-        label: impl Into<String>,
-        config: Option<DumpConfig>,
-        existing_file: Option<SharedDumpFile>,
-    ) -> anyhow::Result<(Self, Option<SharedDumpFile>)> {
-        let label = label.into();
-
-        let Some(config) = config else {
-            return Ok((
-                Self {
-                    label,
-                    format: DumpFormat::RawBinary,
-                    sink: DumpSink::Disabled,
-                    offset: 0,
-                },
-                None,
-            ));
-        };
-
-        let format = config.format.unwrap_or(DumpFormat::RawBinary);
-        let (sink, handle) = match (existing_file, config.file.as_ref()) {
-            (None, Some(path)) => {
-                let f = tokio::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .await
-                    .with_context(|| format!("opening dump file {}", path.display()))?;
-                let shared = Arc::new(Mutex::new(BufWriter::with_capacity(256 * 1024, f)));
-                (DumpSink::File(shared.clone()), Some(shared))
-            }
-            (None, None) => (DumpSink::Stderr, None),
-            (Some(f), _) => (DumpSink::File(f.clone()), Some(f)),
-        };
-
-        Ok((
-            Self {
-                label,
-                format,
-                sink,
-                offset: 0,
-            },
-            handle,
-        ))
-    }
-
-    pub async fn log_bytes(&mut self, buf: &[u8]) -> anyhow::Result<()> {
-        if buf.is_empty() || matches!(self.sink, DumpSink::Disabled) {
-            return Ok(());
-        }
-
-        let entry: Vec<u8> = match self.format {
-            DumpFormat::Hex => format!(
-                "[{}] {} bytes @ {:#x}\n{}\n",
-                self.label,
-                buf.len(),
-                self.offset,
-                format_hex_dump(buf, self.offset)
-            )
-            .into_bytes(),
-            DumpFormat::RawBinary => buf.to_vec(),
-        };
-
-        self.offset += buf.len() as u64;
-
-        match &self.sink {
-            DumpSink::Disabled => unreachable!(),
-            DumpSink::Stderr => {
-                let mut out = stderr_dump().lock().await;
-                out.write_all(&entry).await?;
-                out.flush().await?;
-            }
-            DumpSink::File(f) => {
-                f.lock().await.write_all(&entry).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn flush(&mut self) -> anyhow::Result<()> {
-        if let DumpSink::File(f) = &self.sink {
-            f.lock().await.flush().await?;
-        }
-
-        Ok(())
-    }
-}
 
 #[derive(Debug, Default, Deserialize, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]

@@ -1,38 +1,97 @@
-//! endpoint.rs
+//! endpoint.rs — what the relay connects to.
+//!
+//! An endpoint is one end of the byte path: a socket to dial or listen on, a
+//! file, a child process, or stdio. [`EndpointSpec`] is the parsed form and can
+//! come either from the compact CLI grammar (`tcp-listen:8080,fork`) or from a
+//! TOML table, which is why it carries both `FromStr` and `Deserialize`.
+//!
+//! [`Direction`] here means *role* — which side of the relay this endpoint is —
+//! not which way bytes are moving. It matters for `file:` and the other
+//! half-duplex endpoints, where the same spec opens for reading as a source and
+//! for writing as a sink.
+//!
+//! Two things are load-bearing and easy to lose in a refactor: a `UnixListen`
+//! endpoint hands back a [`UnixSocketGuard`] that unlinks the socket on drop,
+//! so the guard has to outlive the connection; and opening a FIFO blocks until
+//! a peer appears, which is worth the warning it emits rather than looking like
+//! a hang.
+//!
+//! Payload dumping used to be an endpoint option (`dump=`, `format=`). It is
+//! now the `tee` plugin, which can sit anywhere in the pipeline rather than
+//! only at the ends.
 
 use std::{
     num::NonZeroUsize,
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::PathBuf,
-    process::Stdio,
     str::FromStr,
 };
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize, Serializer, de::Error as _};
+use tocat_api::StderrMode;
 use tokio::{
     io::{AsyncRead, AsyncWrite, empty, sink},
     net::{TcpListener, TcpStream, UnixListener, UnixStream},
-    process::Command,
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+
+use crate::child;
+
+/// A synchronous endpoint half. See [`EndpointSpec::connect_sync`].
+pub type SyncRead = Box<dyn std::io::Read + Send>;
+pub type SyncWrite = Box<dyn std::io::Write + Send>;
+
+/// The blocking halves of an endpoint. Either may be absent — a `file:` source
+/// has nothing to write to, and pairing a reader with a missing writer means
+/// that direction does not exist and should not be run at all.
+#[derive(Default)]
+pub struct SyncHalves {
+    pub reader: Option<SyncRead>,
+    pub writer: Option<SyncWrite>,
+}
+
+/// stdin/stdout as raw descriptors.
+///
+/// `std::io::stdout()` is a `LineWriter`: it scans every byte for newlines and
+/// flushes on each one, which is ruinous for binary payload. `std::io::stdin()`
+/// carries an 8 KiB `BufReader`, which is one more copy of everything. Going to
+/// the descriptor directly avoids both.
+struct RawStd(std::mem::ManuallyDrop<std::fs::File>);
+
+impl RawStd {
+    /// # Safety
+    ///
+    /// `fd` must be open for the life of the process. `ManuallyDrop` keeps the
+    /// descriptor from being closed when this value is dropped, which matters:
+    /// closing fd 1 out from under the process would be hard to debug.
+    unsafe fn new(fd: std::os::fd::RawFd) -> Self {
+        use std::os::fd::FromRawFd;
+        Self(std::mem::ManuallyDrop::new(unsafe {
+            std::fs::File::from_raw_fd(fd)
+        }))
+    }
+}
+
+impl std::io::Read for RawStd {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        (&*self.0).read(buf)
+    }
+}
+
+impl std::io::Write for RawStd {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (&*self.0).write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&*self.0).flush()
+    }
+}
 
 pub struct Connection {
     pub stream: EndpointStream,
     pub guard: Option<UnixSocketGuard>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Copy)]
-#[serde(rename_all = "kebab-case")]
-pub enum DumpFormat {
-    Hex,
-    RawBinary,
-}
-
-#[derive(Debug, Clone, Deserialize, Default, Serialize)]
-pub struct DumpConfig {
-    pub file: Option<PathBuf>,
-    pub format: Option<DumpFormat>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -119,14 +178,6 @@ impl Endpoint {
     }
 }
 
-fn parse_dump_target(val: &str) -> Result<Option<PathBuf>, ParseEndpointError> {
-    match val {
-        "-" | "stderr" | "/dev/stderr" => Ok(None),
-        "stdout" | "/dev/stdout" | "/dev/fd/1" => Err(ParseEndpointError::DumpToStdout),
-        other => Ok(Some(PathBuf::from(other))),
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Mode(u32);
 
@@ -183,8 +234,6 @@ pub enum EndpointSpec {
     Tcp {
         addr: String,
         #[serde(default)]
-        dump: Option<DumpConfig>,
-        #[serde(default)]
         name: Option<String>,
     },
     #[serde(
@@ -202,23 +251,17 @@ pub enum EndpointSpec {
         #[serde(default)]
         name: Option<String>,
         #[serde(default)]
-        dump: Option<DumpConfig>,
-        #[serde(default)]
         fork: bool,
         #[serde(default, rename = "max-connections")]
         max_connections: Option<NonZeroUsize>,
     },
     Stdio {
         #[serde(default)]
-        dump: Option<DumpConfig>,
-        #[serde(default)]
         name: Option<String>,
     },
     #[serde(alias = "UNIX", alias = "unix-connect", alias = "UNIX-CONNECT")]
     Unix {
         path: PathBuf,
-        #[serde(default)]
-        dump: Option<DumpConfig>,
         #[serde(default)]
         name: Option<String>,
     },
@@ -227,8 +270,6 @@ pub enum EndpointSpec {
         path: PathBuf,
         #[serde(default)]
         name: Option<String>,
-        #[serde(default)]
-        dump: Option<DumpConfig>,
         #[serde(default)]
         fork: bool,
         #[serde(default, rename = "max-connections")]
@@ -247,21 +288,15 @@ pub enum EndpointSpec {
         #[serde(default)]
         truncate: bool,
         #[serde(default)]
-        dump: Option<DumpConfig>,
-        #[serde(default)]
         name: Option<String>,
     },
     Exec {
         argv: Vec<String>,
         #[serde(default)]
-        dump: Option<DumpConfig>,
-        #[serde(default)]
         name: Option<String>,
     },
     System {
         command: String,
-        #[serde(default)]
-        dump: Option<DumpConfig>,
         #[serde(default)]
         name: Option<String>,
     },
@@ -311,37 +346,46 @@ async fn open_file(
     Ok(file)
 }
 
-async fn spawn_child(program: &str, args: &[String], shell: bool) -> anyhow::Result<Connection> {
-    let mut cmd = if shell {
-        let sh = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-        let mut c = Command::new(sh);
-        c.arg("-c").arg(program);
-        c
-    } else {
-        let mut c = Command::new(program);
-        c.args(args);
-        c
-    };
+fn open_file_sync(
+    path: &std::path::Path,
+    dir: Direction,
+    append: bool,
+    create: bool,
+    truncate: bool,
+) -> anyhow::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
 
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
-
-    let mut child = cmd.spawn().with_context(|| format!("spawning {program}"))?;
-    let stdout = child.stdout.take().expect("piped");
-    let stdin = child.stdin.take().expect("piped");
-    let pid = child.id();
-
-    tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) if status.success() => debug!(?pid, "child exited"),
-            Ok(status) => warn!(?pid, %status, "child exited non-zero"),
-            Err(e) => warn!(?pid, error = %e, "waiting on child failed"),
+    match dir {
+        Direction::Source => {
+            opts.read(true);
         }
-    });
+        Direction::Sink => {
+            opts.write(true)
+                .create(create)
+                .append(append)
+                .truncate(truncate && !append);
+        }
+    }
 
-    Ok(EndpointStream::Split(Box::new(stdout), Box::new(stdin)).into_connection())
+    let file = opts
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+
+    #[cfg(unix)]
+    if file.metadata()?.file_type().is_fifo() {
+        warn!(path = %path.display(), "FIFO endpoint: open blocks until a peer connects");
+    }
+
+    Ok(file)
+}
+
+async fn spawn_child(program: &str, args: &[String], shell: bool) -> anyhow::Result<Connection> {
+    // Endpoints inherit stderr so a child's diagnostics reach the terminal
+    // rather than the relayed data.
+    let parts = child::spawn(program, args, shell, StderrMode::Inherit)?;
+    child::reap_in_background(parts.child);
+
+    Ok(EndpointStream::Split(Box::new(parts.stdout), Box::new(parts.stdin)).into_connection())
 }
 
 impl EndpointSpec {
@@ -365,7 +409,7 @@ impl EndpointSpec {
             EndpointSpec::Tcp { name: Some(n), .. } => n.clone(),
             EndpointSpec::Tcp {
                 addr, name: None, ..
-            } => format!("tcp://({addr}"),
+            } => format!("tcp://{addr}"),
             EndpointSpec::Stdio { name: Some(n), .. } => n.clone(),
             EndpointSpec::Stdio { name: None, .. } => "STDIO".to_string(),
             EndpointSpec::TcpListen { name: Some(n), .. } => n.clone(),
@@ -399,6 +443,54 @@ impl EndpointSpec {
         }
     }
 
+    /// True when tokio has no real async implementation for this endpoint and
+    /// serves it from the blocking pool.
+    ///
+    /// Those wrappers read into their own buffer and then copy into yours, so a
+    /// relay between two of them pays two userspace copies of the payload that
+    /// a plain `read`/`write` loop does not. When nothing else needs the async
+    /// machinery, [`connect_sync`](Self::connect_sync) skips it.
+    pub fn is_blocking_backed(&self) -> bool {
+        matches!(self, EndpointSpec::File { .. } | EndpointSpec::Stdio { .. })
+    }
+
+    /// Open this endpoint as plain blocking handles.
+    ///
+    /// Only valid for endpoints where
+    /// [`is_blocking_backed`](Self::is_blocking_backed) holds; sockets are
+    /// genuinely async and gain nothing here.
+    pub fn connect_sync(&self, dir: Direction) -> anyhow::Result<SyncHalves> {
+        match self {
+            EndpointSpec::Stdio { .. } => Ok(SyncHalves {
+                // SAFETY: fds 0 and 1 are open for the life of the process, and
+                // `RawStd` will not close them.
+                reader: Some(Box::new(unsafe { RawStd::new(0) })),
+                writer: Some(Box::new(unsafe { RawStd::new(1) })),
+            }),
+            EndpointSpec::File {
+                path,
+                append,
+                create,
+                truncate,
+                ..
+            } => {
+                let file = open_file_sync(path, dir, *append, *create, *truncate)?;
+
+                Ok(match dir {
+                    Direction::Source => SyncHalves {
+                        reader: Some(Box::new(file)),
+                        writer: None,
+                    },
+                    Direction::Sink => SyncHalves {
+                        reader: None,
+                        writer: Some(Box::new(file)),
+                    },
+                })
+            }
+            other => anyhow::bail!("{} has no synchronous form", other.name()),
+        }
+    }
+
     pub fn max_connections(&self) -> NonZeroUsize {
         const DEFAULT_MAX_CONNECTIONS: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 
@@ -410,19 +502,6 @@ impl EndpointSpec {
                 max_connections, ..
             } => max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
             _ => DEFAULT_MAX_CONNECTIONS,
-        }
-    }
-
-    pub fn dump_config(&self) -> Option<&DumpConfig> {
-        match self {
-            EndpointSpec::Tcp { dump, .. }
-            | EndpointSpec::Stdio { dump, .. }
-            | EndpointSpec::Unix { dump, .. }
-            | EndpointSpec::UnixListen { dump, .. }
-            | EndpointSpec::File { dump, .. }
-            | EndpointSpec::Exec { dump, .. }
-            | EndpointSpec::System { dump, .. }
-            | EndpointSpec::TcpListen { dump, .. } => dump.as_ref(),
         }
     }
 
@@ -523,7 +602,6 @@ pub enum ParseEndpointError {
     UnknownScheme(String),
     UnknownOption(String),
     InvalidPort(String),
-    DumpToStdout,
     InvalidMode(String),
     InvalidFlag(String),
     MissingValue(String),
@@ -537,10 +615,6 @@ impl std::fmt::Display for ParseEndpointError {
             ParseEndpointError::UnknownScheme(body) => write!(f, "unknown scheme: {body}"),
             ParseEndpointError::UnknownOption(body) => write!(f, "unknown option: {body}"),
             ParseEndpointError::InvalidPort(body) => write!(f, "invalid port: {body}"),
-            ParseEndpointError::DumpToStdout => write!(
-                f,
-                "cannot dump to stdout, it may carry relay payload. Use `-` for stderr."
-            ),
             ParseEndpointError::InvalidMode(body) => write!(f, "invalid permissions: {body}"),
             ParseEndpointError::InvalidFlag(body) => write!(f, "invalid flag: {body}"),
             ParseEndpointError::MissingValue(body) => write!(f, "missing value: {body}"),
@@ -554,7 +628,6 @@ impl std::error::Error for ParseEndpointError {}
 #[derive(Default, Debug)]
 struct Options {
     name: Option<String>,
-    dump: Option<DumpConfig>,
     fork: bool,
     max_connections: Option<NonZeroUsize>,
     unlink: bool,
@@ -580,8 +653,6 @@ impl Options {
         use ParseEndpointError as E;
 
         let mut o = Self::new();
-        let mut dump = DumpConfig::default();
-        let mut has_dump = false;
 
         for opt in parts {
             let (key, val) = match opt.split_once('=') {
@@ -597,19 +668,7 @@ impl Options {
             match key {
                 "append" => o.append = flag(val)?,
                 "create" => o.create = flag(val)?,
-                "dump" | "dump_file" => {
-                    dump.file = parse_dump_target(value(key, val)?)?;
-                    has_dump = true;
-                }
                 "fork" => o.fork = flag(val)?,
-                "format" | "dump_format" => {
-                    dump.format = Some(match value(key, val)? {
-                        "hex" => DumpFormat::Hex,
-                        "raw" | "binary" | "raw-binary" => DumpFormat::RawBinary,
-                        other => return Err(E::UnknownOption(other.to_string())),
-                    });
-                    has_dump = true;
-                }
                 "max-connections" | "max_connections" | "max_conn" | "max-conn" => {
                     o.max_connections = Some(
                         value(key, val)?
@@ -625,7 +684,6 @@ impl Options {
             }
         }
 
-        o.dump = has_dump.then_some(dump);
         Ok(o)
     }
 }
@@ -636,7 +694,6 @@ fn tcp(body: &str, o: Options) -> Result<EndpointSpec, ParseEndpointError> {
     }
     Ok(EndpointSpec::Tcp {
         addr: body.to_owned(),
-        dump: o.dump,
         name: o.name,
     })
 }
@@ -669,7 +726,6 @@ fn tcp_listen(body: &str, o: Options) -> Result<EndpointSpec, ParseEndpointError
         host,
         port,
         name: o.name,
-        dump: o.dump,
         fork: o.fork,
         max_connections: o.max_connections,
     })
@@ -681,11 +737,7 @@ fn exec(body: &str, o: Options) -> Result<EndpointSpec, ParseEndpointError> {
         return Err(ParseEndpointError::Empty);
     }
 
-    Ok(EndpointSpec::Exec {
-        argv,
-        dump: o.dump,
-        name: o.name,
-    })
+    Ok(EndpointSpec::Exec { argv, name: o.name })
 }
 
 impl FromStr for EndpointSpec {
@@ -697,10 +749,7 @@ impl FromStr for EndpointSpec {
         }
 
         if s == "-" {
-            return Ok(Self::Stdio {
-                dump: None,
-                name: None,
-            });
+            return Ok(Self::Stdio { name: None });
         }
 
         let mut parts = s.split(',');
@@ -713,18 +762,13 @@ impl FromStr for EndpointSpec {
             "exec" => exec(body, opts),
             "system" => Ok(Self::System {
                 command: body.to_string(),
-                dump: opts.dump,
                 name: opts.name,
             }),
             "tcp" | "tcp-connect" | "connect" => tcp(body, opts),
             "tcplisten" | "tcp-listen" | "listen" => tcp_listen(body, opts),
-            "stdio" => Ok(Self::Stdio {
-                dump: opts.dump,
-                name: opts.name,
-            }),
+            "stdio" => Ok(Self::Stdio { name: opts.name }),
             "unix" | "unix-connect" => Ok(Self::Unix {
                 path: PathBuf::from(body),
-                dump: opts.dump,
                 name: opts.name,
             }),
             "file" => Ok(Self::File {
@@ -732,13 +776,11 @@ impl FromStr for EndpointSpec {
                 append: opts.append,
                 create: opts.create,
                 truncate: opts.truncate,
-                dump: opts.dump,
                 name: opts.name,
             }),
             "unixlisten" | "unix-listen" => Ok(Self::UnixListen {
                 path: PathBuf::from(body),
                 name: opts.name,
-                dump: opts.dump,
                 fork: opts.fork,
                 max_connections: opts.max_connections,
                 unlink: opts.unlink,

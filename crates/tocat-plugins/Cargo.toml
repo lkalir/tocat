@@ -1,0 +1,25 @@
+[package]
+name = "tocat-plugins"
+version.workspace = true
+edition.workspace = true
+description = "Built-in tocat plugins"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+tocat-api = { path = "../tocat-api" }
+tocat-plugin-compress = {
+  path = "../plugins/tocat-plugin-compress",
+  optional = true
+}
+tocat-plugin-process = {
+  path = "../plugins/tocat-plugin-process/",
+  optional = true
+}
+tocat-plugin-tee = { path = "../plugins/tocat-plugin-tee", optional = true }
+
+[features]
+default = ["compress", "process", "tee"]
+compress = ["dep:tocat-plugin-compress"]
+process = ["dep:tocat-plugin-process"]
+tee = ["dep:tocat-plugin-tee"]
