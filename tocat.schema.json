@@ -21,6 +21,20 @@
         "$ref": "#/$defs/plugin"
       }
     },
+    "buffer-size": {
+      "description": "Bytes per copy. A plain byte count or a binary suffix ('64k', '1MiB'). One buffer per direction per connection, so under `fork` this multiplies: 1 MiB across 1024 connections is 2 GiB resident. Defaults to 256 KiB. Overridden by -b.",
+      "default": "256KiB",
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "string",
+          "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+        }
+      ]
+    },
     "log-level": {
       "$ref": "#/$defs/log-level",
       "description": "Log verbosity"
@@ -207,6 +221,9 @@
           "$ref": "#/$defs/file-endpoint"
         },
         {
+          "$ref": "#/$defs/pipe-endpoint"
+        },
+        {
           "$ref": "#/$defs/stdio-endpoint"
         },
         {
@@ -236,6 +253,7 @@
         "listen:8000,fork",
         "unix:/tmp/tocat.sock",
         "unix-listen:/tmp/tocat.sock,fork,unlink,mode=660",
+        "pipe:/tmp/events,create",
         "stdio",
         "-"
       ]
@@ -464,6 +482,78 @@
           "type": "boolean",
           "default": false,
           "description": "Truncate on open. Ignored when appending. Sink only."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "pipe-endpoint": {
+      "title": "pipe",
+      "type": "object",
+      "description": "A named pipe (FIFO). Unidirectional, like `file:`, but a rendezvous rather than storage: it is read as the source and written as the sink.",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "pipe",
+            "PIPE",
+            "fifo",
+            "FIFO"
+          ],
+          "description": "Pipe type tag. `fifo` is an alias; both name the same thing."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path of the FIFO.",
+          "examples": [
+            "/tmp/events",
+            "/run/app/events"
+          ]
+        },
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "mkfifo the path if it is missing. A path that exists but is not a FIFO is an error rather than a fallback."
+        },
+        "hold": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the FIFO open across producers. tocat opens read-write, so it is its own writer: opening never blocks and the stream never ends, which is what you want for a log or event pipe whose producers come and go. Without it a source blocks until a writer appears and sees EOF when the last one leaves — one producer, then done."
+        },
+        "size": {
+          "description": "Kernel FIFO capacity. Linux only, best-effort: rounded up to a power of two, and capped by /proc/sys/fs/pipe-max-size for unprivileged processes. Unrelated to `buffer-size` — this one decides when the *producer* blocks. Left at the kernel default (64 KiB) when absent, because a named FIFO is shared with whoever else has it open.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        },
+        "unlink": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove the FIFO when the relay finishes."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0?[0-7]{3}$",
+          "description": "Permissions applied after creation, as an octal string. Applied explicitly, so it is not masked by umask.",
+          "examples": [
+            "600",
+            "660",
+            "666"
+          ]
         },
         "name": {
           "type": "string",

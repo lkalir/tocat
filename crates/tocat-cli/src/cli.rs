@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::logging::LogLevel;
+use crate::{config::ByteSize, logging::LogLevel};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "socat-inspired relay")]
@@ -34,6 +34,14 @@ pub struct Cli {
 
     #[arg(long, help = "Render the final configuration as TOML.")]
     pub dump_config: bool,
+
+    #[arg(
+        short = 'b',
+        long,
+        value_name = "SIZE",
+        help = "Bytes per copy, e.g. 65536 or 256KiB. One buffer per direction per connection."
+    )]
+    pub buffer_size: Option<ByteSize>,
 
     #[arg(
         short = 'f',

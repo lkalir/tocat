@@ -36,10 +36,10 @@ use tracing::{Instrument, debug, error, info, warn};
 
 use crate::{
     endpoint::{
-        Direction, EndpointSpec, EndpointStream, SyncRead, SyncWrite, UnixSocketGuard, bind_unix,
+        Direction, EndpointSpec, EndpointStream, PathGuard, SyncRead, SyncWrite, bind_unix,
     },
     host::{ChannelPlan, Channels},
-    pump::{BUF, pump},
+    pump::pump,
     shutdown::Shutdown,
 };
 
@@ -50,7 +50,7 @@ enum Listener {
 
 impl Listener {
     /// Start listener.
-    async fn bind(spec: &EndpointSpec) -> anyhow::Result<(Self, Option<UnixSocketGuard>)> {
+    async fn bind(spec: &EndpointSpec) -> anyhow::Result<(Self, Option<PathGuard>)> {
         match spec {
             EndpointSpec::TcpListen { host, port, .. } => {
                 let host = host.as_deref().unwrap_or("localhost");
@@ -64,7 +64,7 @@ impl Listener {
             } => {
                 let l = bind_unix(path, *unlink, *mode).await?;
                 info!(path = %path.display(), "listening");
-                Ok((Listener::Unix(l), Some(UnixSocketGuard(path.clone()))))
+                Ok((Listener::Unix(l), Some(PathGuard(path.clone()))))
             }
             _ => anyhow::bail!("fork is only supported on listening endpoints"),
         }
@@ -100,15 +100,19 @@ fn is_fatal_accept(e: &std::io::Error) -> bool {
 }
 
 /// Fast-path for copying data between split endpoints.
-async fn copy_split(src: EndpointStream, sink: EndpointStream) -> anyhow::Result<u64> {
+async fn copy_split(
+    src: EndpointStream,
+    sink: EndpointStream,
+    buffer: usize,
+) -> anyhow::Result<u64> {
     let (src_read, src_write) = src.into_split();
     let (sink_read, sink_write) = sink.into_split();
 
     // Readers are buffered because `copy_buf` needs `AsyncBufRead`. Writers are
     // not: `copy_buf` hands them a full 256 KiB slice already, so a `BufWriter`
     // would only copy the payload into a second buffer to write the same bytes.
-    let mut src_read = BufReader::with_capacity(BUF, src_read);
-    let mut sink_read = BufReader::with_capacity(BUF, sink_read);
+    let mut src_read = BufReader::with_capacity(buffer, src_read);
+    let mut sink_read = BufReader::with_capacity(buffer, sink_read);
     let mut src_write = src_write;
     let mut sink_write = sink_write;
 
@@ -133,11 +137,12 @@ fn copy_sync(
     mut reader: SyncRead,
     mut writer: SyncWrite,
     shutdown: &Shutdown,
+    buffer: usize,
 ) -> anyhow::Result<u64> {
     // Deliberately not `std::io::copy`: its kernel-offload specialisations only
     // fire for concrete types, and through a `dyn` it falls back to an 8 KiB
     // stack buffer: 32x the syscalls for the same bytes.
-    let mut buf = vec![0u8; BUF].into_boxed_slice();
+    let mut buf = vec![0u8; buffer].into_boxed_slice();
     let mut total = 0u64;
 
     loop {
@@ -165,15 +170,20 @@ fn copy_sync(
 }
 
 /// The plugin-free fast-path.
-async fn copy_fast(src_stream: EndpointStream, sink_stream: EndpointStream) -> anyhow::Result<u64> {
+async fn copy_fast(
+    src_stream: EndpointStream,
+    sink_stream: EndpointStream,
+    buffer: usize,
+) -> anyhow::Result<u64> {
     // If both streams are duplex, we can use the fast bidirectional copy from tokio
     if src_stream.is_duplex() && sink_stream.is_duplex() {
         let (mut a, mut b) = (src_stream.into_duplex(), sink_stream.into_duplex());
-        let (x, y) = tokio::io::copy_bidirectional_with_sizes(&mut a, &mut b, BUF, BUF).await?;
+        let (x, y) =
+            tokio::io::copy_bidirectional_with_sizes(&mut a, &mut b, buffer, buffer).await?;
         return Ok(x + y);
     }
 
-    copy_split(src_stream, sink_stream).await
+    copy_split(src_stream, sink_stream, buffer).await
 }
 
 /// Drive the relay.
@@ -185,10 +195,11 @@ async fn relay_streams(
     forward: Chain,
     reverse: Chain,
     channels: Arc<Channels>,
+    buffer: usize,
 ) -> anyhow::Result<()> {
     // Nothing declared on either path: keep the old fast path exactly.
     if forward.is_empty() && reverse.is_empty() {
-        let total = copy_fast(src_stream, sink_stream).await?;
+        let total = copy_fast(src_stream, sink_stream, buffer).await?;
         info!(bytes = total, "relay finished");
         return Ok(());
     }
@@ -199,8 +210,8 @@ async fn relay_streams(
     let (sink_read, sink_write) = sink_stream.into_split();
 
     let (a, b) = tokio::try_join!(
-        pump(src_read, sink_write, forward, channels.clone()),
-        pump(sink_read, src_write, reverse, channels.clone()),
+        pump(src_read, sink_write, forward, channels.clone(), buffer),
+        pump(sink_read, src_write, reverse, channels.clone(), buffer),
     )?;
 
     info!(bytes = a + b, "relay finished");
@@ -219,6 +230,7 @@ pub struct Relay {
     /// Frozen after construction; cloned per connection to resolve handles.
     plan: ChannelPlan,
     channels: Arc<Channels>,
+    buffer: usize,
 }
 
 impl Relay {
@@ -232,6 +244,7 @@ impl Relay {
         sink: EndpointSpec,
         plugins: Vec<PluginSpec>,
         registry: Registry,
+        buffer: usize,
     ) -> anyhow::Result<Self> {
         let mut plan = ChannelPlan::new();
 
@@ -250,6 +263,16 @@ impl Relay {
         plan.freeze();
         let channels = Channels::open(plan.targets()).await?;
 
+        // One buffer per direction per connection: worth saying out loud before
+        // someone pairs a large buffer with a high connection ceiling.
+        let peak = buffer.saturating_mul(source.max_connections().get().max(1)) * 2;
+        if peak > 1024 * 1024 * 1024 {
+            warn!(
+                buffer,
+                "buffer size and connection ceiling allow over 1 GiB of copy buffers"
+            );
+        }
+
         Ok(Self {
             source,
             sink,
@@ -257,6 +280,7 @@ impl Relay {
             registry,
             plan,
             channels,
+            buffer,
         })
     }
 
@@ -323,8 +347,13 @@ impl Relay {
     /// cancellable, so a shutdown signal takes effect when the current read
     /// returns. Sockets, where that would matter, never take this path.
     async fn run_sync(&self, shutdown: Shutdown) -> anyhow::Result<()> {
-        let source = self.source.connect_sync(Direction::Source)?;
-        let sink = self.sink.connect_sync(Direction::Sink)?;
+        let mut source = self.source.connect_sync(Direction::Source, self.buffer)?;
+        let mut sink = self.sink.connect_sync(Direction::Sink, self.buffer)?;
+
+        // Held until every copy has finished: dropping these unlinks a `pipe:`
+        // opened with `unlink`, and doing that early would remove the path out
+        // from under a producer still writing to it.
+        let _guards = (source.guard.take(), sink.guard.take());
 
         // A direction with no reader or no writer does not exist. Skipping it
         // matters: a `file:` source paired with stdio would otherwise park a
@@ -336,9 +365,10 @@ impl Relay {
         for (reader, writer) in directions {
             if let (Some(reader), Some(writer)) = (reader, writer) {
                 let shutdown = shutdown.clone();
+                let buffer = self.buffer;
 
                 running.push(tokio::task::spawn_blocking(move || {
-                    copy_sync(reader, writer, &shutdown)
+                    copy_sync(reader, writer, &shutdown, buffer)
                 }));
             }
         }
@@ -362,13 +392,13 @@ impl Relay {
             // This prevents clients connecting to the sink from needlessly being blocked on
             // waiting for clients to connect to the source first
             tokio::try_join!(
-                self.source.connect(Direction::Source),
-                self.sink.connect(Direction::Sink)
+                self.source.connect(Direction::Source, self.buffer),
+                self.sink.connect(Direction::Sink, self.buffer)
             )?
         } else {
             (
-                self.source.connect(Direction::Source).await?,
-                self.sink.connect(Direction::Sink).await?,
+                self.source.connect(Direction::Source, self.buffer).await?,
+                self.sink.connect(Direction::Sink, self.buffer).await?,
             )
         };
 
@@ -382,6 +412,7 @@ impl Relay {
             forward,
             reverse,
             self.channels.clone(),
+            self.buffer,
         )
         .await
     }
@@ -466,7 +497,7 @@ impl Relay {
             Direction::Source => &self.source,
         };
 
-        let dialled = peer_spec.connect(peer_dir).await?;
+        let dialled = peer_spec.connect(peer_dir, self.buffer).await?;
         let _guard = dialled.guard;
 
         let (src_stream, sink_stream, src_spec, sink_spec) = match peer_dir {
@@ -494,6 +525,7 @@ impl Relay {
             forward,
             reverse,
             self.channels.clone(),
+            self.buffer,
         )
         .await
     }

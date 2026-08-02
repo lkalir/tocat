@@ -107,7 +107,15 @@ async fn start() -> anyhow::Result<ExitCode> {
 
     // Plugin construction happens here, so a bad declaration or an unopenable
     // dump file fails before either endpoint is touched.
-    let relay = match Relay::new(settings.source, settings.sink, settings.plugins, registry).await {
+    let relay = match Relay::new(
+        settings.source,
+        settings.sink,
+        settings.plugins,
+        registry,
+        settings.buffer,
+    )
+    .await
+    {
         Ok(relay) => relay,
         Err(e) => {
             error!("Plugin setup failed: {e:#}");

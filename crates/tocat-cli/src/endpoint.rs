@@ -11,10 +11,14 @@
 //! for writing as a sink.
 //!
 //! Two things are load-bearing and easy to lose in a refactor: a `UnixListen`
-//! endpoint hands back a [`UnixSocketGuard`] that unlinks the socket on drop,
-//! so the guard has to outlive the connection; and opening a FIFO blocks until
-//! a peer appears, which is worth the warning it emits rather than looking like
-//! a hang.
+//! endpoint, or a `pipe:` opened with `unlink`, hands back a [`PathGuard`] that
+//! removes the path on drop, so the guard has to outlive the connection; and a
+//! FIFO opened without `hold` blocks until a peer appears, which is worth the
+//! warning it emits rather than looking like a hang.
+//!
+//! `pipe:` (alias `fifo:`) defaults to holding the FIFO open read-write, so it
+//! outlives its producers. `file:` pointed at a FIFO is the one-shot version
+//! and keeps that behaviour.
 //!
 //! Payload dumping used to be an endpoint option (`dump=`, `format=`). It is
 //! now the `tee` plugin, which can sit anywhere in the pipeline rather than
@@ -28,15 +32,16 @@ use std::{
 };
 
 use anyhow::Context;
+use nix::sys::stat::Mode as FileMode;
 use serde::{Deserialize, Serialize, Serializer, de::Error as _};
 use tocat_api::StderrMode;
 use tokio::{
     io::{AsyncRead, AsyncWrite, empty, sink},
     net::{TcpListener, TcpStream, UnixListener, UnixStream},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
-use crate::child;
+use crate::{child, config::ByteSize};
 
 /// A synchronous endpoint half. See [`EndpointSpec::connect_sync`].
 pub type SyncRead = Box<dyn std::io::Read + Send>;
@@ -49,6 +54,10 @@ pub type SyncWrite = Box<dyn std::io::Write + Send>;
 pub struct SyncHalves {
     pub reader: Option<SyncRead>,
     pub writer: Option<SyncWrite>,
+    /// Carried for the same reason [`Connection`] carries one: a `pipe:` opened
+    /// with `unlink` removes its path when this is dropped, so the caller has
+    /// to hold it for as long as the transfer runs.
+    pub guard: Option<PathGuard>,
 }
 
 /// stdin/stdout as raw descriptors.
@@ -91,7 +100,7 @@ impl std::io::Write for RawStd {
 
 pub struct Connection {
     pub stream: EndpointStream,
-    pub guard: Option<UnixSocketGuard>,
+    pub guard: Option<PathGuard>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -120,7 +129,7 @@ impl EndpointStream {
         }
     }
 
-    pub fn into_connection_with_guard(self, guard: UnixSocketGuard) -> Connection {
+    pub fn into_connection_with_guard(self, guard: PathGuard) -> Connection {
         Connection {
             stream: self,
             guard: Some(guard),
@@ -279,6 +288,33 @@ pub enum EndpointSpec {
         #[serde(default)]
         mode: Option<Mode>,
     },
+    #[serde(alias = "fifo", alias = "FIFO", alias = "PIPE")]
+    Pipe {
+        path: PathBuf,
+        /// `mkfifo` the path if it is missing.
+        #[serde(default = "default_true")]
+        create: bool,
+        #[serde(default)]
+        mode: Option<Mode>,
+        /// Remove the FIFO when the relay finishes.
+        #[serde(default)]
+        unlink: bool,
+        /// Hold the FIFO open across producers.
+        ///
+        /// With `hold` (the default) tocat opens read-write, so it is its own
+        /// writer: opening never blocks and the stream never ends, which is
+        /// what you want for a log or event pipe whose producers come and go.
+        /// Without it, a source blocks until a writer appears and sees EOF when
+        /// the last one leaves — one producer, then done.
+        #[serde(default = "default_true")]
+        hold: bool,
+        /// Kernel FIFO capacity. Linux only, best-effort, and unrelated to the
+        /// global `buffer-size`: this one decides when the producer blocks.
+        #[serde(default)]
+        size: Option<ByteSize>,
+        #[serde(default)]
+        name: Option<String>,
+    },
     File {
         path: PathBuf,
         #[serde(default)]
@@ -346,6 +382,103 @@ async fn open_file(
     Ok(file)
 }
 
+/// Create the FIFO if it is missing, and refuse anything that is not one.
+fn ensure_fifo(path: &std::path::Path, create: bool, mode: Option<Mode>) -> anyhow::Result<()> {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            anyhow::ensure!(
+                meta.file_type().is_fifo(),
+                "{} exists and is not a FIFO",
+                path.display()
+            );
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::ensure!(
+                create,
+                "{} does not exist; pass `create` to make it",
+                path.display()
+            );
+        }
+        Err(e) => return Err(e).with_context(|| format!("stat {}", path.display())),
+    }
+
+    match nix::unistd::mkfifo(path, FileMode::from_bits_truncate(0o666)) {
+        Ok(()) => {}
+        // A racing producer may have won; anything else is fatal.
+        Err(nix::errno::Errno::EEXIST) => {}
+        Err(e) => return Err(e).with_context(|| format!("mkfifo {}", path.display())),
+    }
+
+    // mkfifo's mode is masked by umask, so apply it explicitly, as with a
+    // bound unix socket.
+    if let Some(mode) = mode {
+        std::fs::set_permissions(path, PermissionsExt::from_mode(mode.0))
+            .with_context(|| format!("chmod {:o} on {}", mode.0, path.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Enlarge a pipe's kernel buffer, if the descriptor is a pipe at all.
+///
+/// Separate from `-b`, which sizes tocat's own copy buffer. This one is kernel
+/// memory and decides when the *writer* blocks: at the 64 KiB default, a
+/// producer stalls as soon as that much is unread, however large tocat's buffer
+/// is. That includes descriptors nobody declared as pipes e.g. `tocat … | pv`
+/// makes fd 1 a pipe, and a child's stdin and stdout always are.
+///
+/// Entirely best-effort. Rather than stat the descriptor first, this asks and
+/// interprets the refusal: a non-pipe answers `EINVAL`, which is not a problem
+/// worth reporting above debug.
+#[cfg(target_os = "linux")]
+pub fn size_if_pipe<F: std::os::fd::AsFd>(fd: &F, label: &str, want: usize) {
+    use nix::{
+        errno::Errno,
+        fcntl::{FcntlArg, fcntl},
+    };
+
+    match fcntl(fd, FcntlArg::F_SETPIPE_SZ(want as std::ffi::c_int)) {
+        Ok(got) if got as usize == want => debug!(pipe = label, size = got, "pipe resized"),
+        Ok(got) => debug!(
+            pipe = label,
+            want, got, "pipe resized to the next power of two"
+        ),
+
+        // Not a pipe. The common case for a file or a socket, and fine.
+        Err(Errno::EINVAL) => debug!(pipe = label, "not a pipe; leaving it alone"),
+
+        // More data is buffered than the requested size would hold.
+        Err(Errno::EBUSY) => debug!(pipe = label, want, "pipe busy; leaving it alone"),
+
+        Err(Errno::EPERM) => warn!(
+            pipe = label,
+            want, "cannot enlarge pipe past /proc/sys/fs/pipe-max-size without CAP_SYS_RESOURCE",
+        ),
+
+        Err(e) => debug!(pipe = label, error = %e, "could not resize pipe"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn size_if_pipe<F: std::os::fd::AsFd>(_fd: &F, _label: &str, _want: usize) {
+    // F_SETPIPE_SZ is Linux-only. Everywhere else keeps the default capacity.
+}
+
+/// Which access a FIFO is opened with.
+///
+/// `hold` opens read-write even on the writing side. POSIX leaves that
+/// undefined, but every platform tocat targets implements it, and it is the
+/// only way to be your own writer — which is what keeps the FIFO from
+/// reporting EOF each time a producer exits.
+fn pipe_access(dir: Direction, hold: bool) -> (bool, bool) {
+    match (hold, dir) {
+        (true, _) => (true, true),
+        (false, Direction::Source) => (true, false),
+        (false, Direction::Sink) => (false, true),
+    }
+}
+
 fn open_file_sync(
     path: &std::path::Path,
     dir: Direction,
@@ -379,10 +512,15 @@ fn open_file_sync(
     Ok(file)
 }
 
-async fn spawn_child(program: &str, args: &[String], shell: bool) -> anyhow::Result<Connection> {
+async fn spawn_child(
+    program: &str,
+    args: &[String],
+    shell: bool,
+    buffer: usize,
+) -> anyhow::Result<Connection> {
     // Endpoints inherit stderr so a child's diagnostics reach the terminal
     // rather than the relayed data.
-    let parts = child::spawn(program, args, shell, StderrMode::Inherit)?;
+    let parts = child::spawn(program, args, shell, StderrMode::Inherit, buffer)?;
     child::reap_in_background(parts.child);
 
     Ok(EndpointStream::Split(Box::new(parts.stdout), Box::new(parts.stdin)).into_connection())
@@ -431,6 +569,10 @@ impl EndpointSpec {
             EndpointSpec::UnixListen {
                 path, name: None, ..
             } => format!("unix://{}", path.display()),
+            EndpointSpec::Pipe { name: Some(n), .. } => n.clone(),
+            EndpointSpec::Pipe {
+                path, name: None, ..
+            } => format!("pipe://{}", path.display()),
             EndpointSpec::File { path, .. } => {
                 format!("file://{}", path.display())
             }
@@ -451,7 +593,10 @@ impl EndpointSpec {
     /// a plain `read`/`write` loop does not. When nothing else needs the async
     /// machinery, [`connect_sync`](Self::connect_sync) skips it.
     pub fn is_blocking_backed(&self) -> bool {
-        matches!(self, EndpointSpec::File { .. } | EndpointSpec::Stdio { .. })
+        matches!(
+            self,
+            EndpointSpec::File { .. } | EndpointSpec::Stdio { .. } | EndpointSpec::Pipe { .. }
+        )
     }
 
     /// Open this endpoint as plain blocking handles.
@@ -459,14 +604,57 @@ impl EndpointSpec {
     /// Only valid for endpoints where
     /// [`is_blocking_backed`](Self::is_blocking_backed) holds; sockets are
     /// genuinely async and gain nothing here.
-    pub fn connect_sync(&self, dir: Direction) -> anyhow::Result<SyncHalves> {
+    pub fn connect_sync(&self, dir: Direction, buffer: usize) -> anyhow::Result<SyncHalves> {
         match self {
-            EndpointSpec::Stdio { .. } => Ok(SyncHalves {
-                // SAFETY: fds 0 and 1 are open for the life of the process, and
-                // `RawStd` will not close them.
-                reader: Some(Box::new(unsafe { RawStd::new(0) })),
-                writer: Some(Box::new(unsafe { RawStd::new(1) })),
-            }),
+            EndpointSpec::Stdio { .. } => {
+                size_if_pipe(&std::io::stdin(), "stdin", buffer);
+                size_if_pipe(&std::io::stdout(), "stdout", buffer);
+
+                Ok(SyncHalves {
+                    // SAFETY: fds 0 and 1 are open for the life of the process,
+                    // and `RawStd` will not close them.
+                    reader: Some(Box::new(unsafe { RawStd::new(0) })),
+                    writer: Some(Box::new(unsafe { RawStd::new(1) })),
+                    guard: None,
+                })
+            }
+            EndpointSpec::Pipe {
+                path,
+                create,
+                mode,
+                unlink,
+                hold,
+                size,
+                ..
+            } => {
+                ensure_fifo(path, *create, *mode)?;
+
+                let (read, write) = pipe_access(dir, *hold);
+                let file = std::fs::OpenOptions::new()
+                    .read(read)
+                    .write(write)
+                    .open(path)
+                    .with_context(|| format!("opening {}", path.display()))?;
+
+                if let Some(size) = size {
+                    size_if_pipe(&file, &path.display().to_string(), size.bytes());
+                }
+
+                let guard = unlink.then(|| PathGuard(path.clone()));
+
+                Ok(match dir {
+                    Direction::Source => SyncHalves {
+                        reader: Some(Box::new(file)),
+                        writer: None,
+                        guard,
+                    },
+                    Direction::Sink => SyncHalves {
+                        reader: None,
+                        writer: Some(Box::new(file)),
+                        guard,
+                    },
+                })
+            }
             EndpointSpec::File {
                 path,
                 append,
@@ -480,10 +668,12 @@ impl EndpointSpec {
                     Direction::Source => SyncHalves {
                         reader: Some(Box::new(file)),
                         writer: None,
+                        guard: None,
                     },
                     Direction::Sink => SyncHalves {
                         reader: None,
                         writer: Some(Box::new(file)),
+                        guard: None,
                     },
                 })
             }
@@ -505,13 +695,20 @@ impl EndpointSpec {
         }
     }
 
-    pub async fn connect(&self, dir: Direction) -> anyhow::Result<Connection> {
+    pub async fn connect(&self, dir: Direction, buffer: usize) -> anyhow::Result<Connection> {
         match self {
             EndpointSpec::Tcp { addr, .. } => {
                 let stream = TcpStream::connect(addr).await?;
                 Ok(EndpointStream::tcp(stream).into_connection())
             }
-            EndpointSpec::Stdio { .. } => Ok(EndpointStream::stdio().into_connection()),
+            EndpointSpec::Stdio { .. } => {
+                // `tocat … | pv` makes fd 1 a pipe without anyone declaring
+                // one, and its 64 KiB default would cap every write.
+                size_if_pipe(&std::io::stdin(), "stdin", buffer);
+                size_if_pipe(&std::io::stdout(), "stdout", buffer);
+
+                Ok(EndpointStream::stdio().into_connection())
+            }
             EndpointSpec::TcpListen { host, port, .. } => {
                 let host = host.as_deref().unwrap_or("localhost");
                 let port = port.unwrap_or(8000);
@@ -531,10 +728,52 @@ impl EndpointSpec {
                 path, unlink, mode, ..
             } => {
                 let listener = bind_unix(path, *unlink, *mode).await?;
-                let guard = UnixSocketGuard(path.clone());
+                let guard = PathGuard(path.clone());
                 info!(path = %path.display(), "listening");
                 let (stream, _) = listener.accept().await?;
                 Ok(EndpointStream::unix(stream).into_connection_with_guard(guard))
+            }
+            EndpointSpec::Pipe {
+                path,
+                create,
+                mode,
+                unlink,
+                hold,
+                size,
+                ..
+            } => {
+                ensure_fifo(path, *create, *mode)?;
+
+                let (read, write) = pipe_access(dir, *hold);
+
+                if !hold {
+                    warn!(path = %path.display(), "FIFO without `hold`: open blocks until a peer connects");
+                }
+
+                let file = tokio::fs::OpenOptions::new()
+                    .read(read)
+                    .write(write)
+                    .open(path)
+                    .await
+                    .with_context(|| format!("opening {}", path.display()))?;
+
+                if let Some(size) = size {
+                    size_if_pipe(&file, &path.display().to_string(), size.bytes());
+                }
+
+                // Half-duplex regardless of how the descriptor was opened: a
+                // `hold` FIFO is readable *and* writable, and treating it as
+                // duplex would feed our own writes straight back to our reader.
+                let stream = match dir {
+                    Direction::Source => EndpointStream::read_only(file),
+                    Direction::Sink => EndpointStream::write_only(file),
+                };
+
+                Ok(if *unlink {
+                    stream.into_connection_with_guard(PathGuard(path.clone()))
+                } else {
+                    stream.into_connection()
+                })
             }
             EndpointSpec::File {
                 path,
@@ -554,15 +793,18 @@ impl EndpointSpec {
                 let Some((program, args)) = argv.split_first() else {
                     anyhow::bail!("exec: empty argv");
                 };
-                spawn_child(program, args, false).await
+                spawn_child(program, args, false, buffer).await
             }
-            EndpointSpec::System { command, .. } => spawn_child(command, &[], true).await,
+            EndpointSpec::System { command, .. } => spawn_child(command, &[], true, buffer).await,
         }
     }
 }
 
-pub struct UnixSocketGuard(pub PathBuf);
-impl Drop for UnixSocketGuard {
+/// Removes a path on drop: a bound unix socket, or a FIFO opened with
+/// `unlink`. Must outlive the connection using it.
+pub struct PathGuard(pub PathBuf);
+
+impl Drop for PathGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
@@ -603,6 +845,7 @@ pub enum ParseEndpointError {
     UnknownOption(String),
     InvalidPort(String),
     InvalidMode(String),
+    InvalidSize(String),
     InvalidFlag(String),
     MissingValue(String),
     InvalidNumber(String),
@@ -616,6 +859,7 @@ impl std::fmt::Display for ParseEndpointError {
             ParseEndpointError::UnknownOption(body) => write!(f, "unknown option: {body}"),
             ParseEndpointError::InvalidPort(body) => write!(f, "invalid port: {body}"),
             ParseEndpointError::InvalidMode(body) => write!(f, "invalid permissions: {body}"),
+            ParseEndpointError::InvalidSize(body) => write!(f, "invalid size: {body}"),
             ParseEndpointError::InvalidFlag(body) => write!(f, "invalid flag: {body}"),
             ParseEndpointError::MissingValue(body) => write!(f, "missing value: {body}"),
             ParseEndpointError::InvalidNumber(body) => write!(f, "invalid number: {body}"),
@@ -631,6 +875,8 @@ struct Options {
     fork: bool,
     max_connections: Option<NonZeroUsize>,
     unlink: bool,
+    hold: bool,
+    size: Option<ByteSize>,
     mode: Option<Mode>,
     append: bool,
     create: bool,
@@ -645,6 +891,7 @@ impl Options {
     fn new() -> Self {
         Self {
             create: true,
+            hold: true,
             ..Default::default()
         }
     }
@@ -669,6 +916,14 @@ impl Options {
                 "append" => o.append = flag(val)?,
                 "create" => o.create = flag(val)?,
                 "fork" => o.fork = flag(val)?,
+                "hold" => o.hold = flag(val)?,
+                "size" | "pipe-size" => {
+                    o.size = Some(
+                        value(key, val)?
+                            .parse()
+                            .map_err(|e| E::InvalidSize(format!("{e}")))?,
+                    );
+                }
                 "max-connections" | "max_connections" | "max_conn" | "max-conn" => {
                     o.max_connections = Some(
                         value(key, val)?
@@ -769,6 +1024,15 @@ impl FromStr for EndpointSpec {
             "stdio" => Ok(Self::Stdio { name: opts.name }),
             "unix" | "unix-connect" => Ok(Self::Unix {
                 path: PathBuf::from(body),
+                name: opts.name,
+            }),
+            "pipe" | "fifo" => Ok(Self::Pipe {
+                path: PathBuf::from(body),
+                create: opts.create,
+                mode: opts.mode,
+                unlink: opts.unlink,
+                hold: opts.hold,
+                size: opts.size,
                 name: opts.name,
             }),
             "file" => Ok(Self::File {

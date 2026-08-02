@@ -30,8 +30,6 @@ use crate::{
     host::{Channels, Effects},
 };
 
-pub const BUF: usize = 256 * 1024;
-
 /// Chunks in flight per detached boundary. Deep enough to keep both sides busy,
 /// shallow enough that backpressure still reaches the reader promptly.
 const LINK_DEPTH: usize = 2;
@@ -42,21 +40,23 @@ pub async fn pump(
     writer: BoxWrite,
     chain: Chain,
     channels: Arc<Channels>,
+    buffer: usize,
 ) -> anyhow::Result<u64> {
     let mut segments = chain.into_segments();
 
     match segments.len() {
-        0 => copy_direct(reader, writer).await,
+        0 => copy_direct(reader, writer, buffer).await,
         1 => {
             run_segment(
                 segments.pop().expect("one segment"),
                 Upstream::Stream(reader),
                 Downstream::Stream(writer),
                 channels,
+                buffer,
             )
             .await
         }
-        _ => run_segmented(reader, writer, segments, channels).await,
+        _ => run_segmented(reader, writer, segments, channels, buffer).await,
     }
 }
 
@@ -84,18 +84,25 @@ async fn run_segment(
     input: Upstream,
     output: Downstream,
     channels: Arc<Channels>,
+    buffer: usize,
 ) -> anyhow::Result<u64> {
     match segment {
         Segment::Inline(pipeline) => {
-            run_pipeline(input.into(), output.into(), pipeline, channels).await
+            run_pipeline(
+                Source::new(input, buffer),
+                output.into(),
+                pipeline,
+                channels,
+            )
+            .await
         }
-        Segment::Process(external) => run_process(external, input, output).await,
+        Segment::Process(external) => run_process(external, input, output, buffer).await,
     }
 }
 
-/// No stages: runs straight through
-async fn copy_direct(reader: BoxRead, mut writer: BoxWrite) -> anyhow::Result<u64> {
-    let mut reader = BufReader::with_capacity(BUF, reader);
+/// No stages: runs straight through.
+async fn copy_direct(reader: BoxRead, mut writer: BoxWrite, buffer: usize) -> anyhow::Result<u64> {
+    let mut reader = BufReader::with_capacity(buffer, reader);
     let total = tokio::io::copy_buf(&mut reader, &mut writer).await?;
 
     writer.flush().await?;
@@ -110,6 +117,7 @@ async fn run_segmented(
     writer: BoxWrite,
     mut segments: Vec<Segment>,
     channels: Arc<Channels>,
+    buffer: usize,
 ) -> anyhow::Result<u64> {
     let n = segments.len();
 
@@ -141,7 +149,7 @@ async fn run_segmented(
         let channels = channels.clone();
 
         spawned.push(tokio::spawn(async move {
-            run_segment(segment, Upstream::Link(inlet), output, channels)
+            run_segment(segment, Upstream::Link(inlet), output, channels, buffer)
                 .await
                 .map(|_| ())
         }));
@@ -154,7 +162,7 @@ async fn run_segmented(
         None => Downstream::Stream(writer.take().expect("a lone segment owns the writer")),
     };
 
-    let total = run_segment(head, Upstream::Stream(reader), output, channels).await?;
+    let total = run_segment(head, Upstream::Stream(reader), output, channels, buffer).await?;
 
     for handle in spawned {
         handle.await.context("segment task panicked")??;
@@ -169,18 +177,19 @@ async fn run_segmented(
 /// loop that wrote a chunk and then read the reply would deadlock against any
 /// filter that buffers (e.g. `sort`, `tac`, `gzip`) with a block pending: the
 /// child blocks writing stdout because nobody is draining it, and we block
-/// writing stdin because its pipe is full.
+/// writing stdin because its pipe is full. Neither side moves.
 async fn run_process(
     external: ExternalStage,
     input: Upstream,
     output: Downstream,
+    buffer: usize,
 ) -> anyhow::Result<u64> {
     let (program, args) = external
         .argv
         .split_first()
         .expect("the factory rejects an empty argv");
 
-    let mut parts = child::spawn(program, args, external.shell, external.stderr)?;
+    let mut parts = child::spawn(program, args, external.shell, external.stderr, buffer)?;
     let name = external.name.clone();
 
     let feed = async {
@@ -188,7 +197,7 @@ async fn run_process(
 
         let total = match input {
             Upstream::Stream(reader) => {
-                let mut reader = BufReader::with_capacity(BUF, reader);
+                let mut reader = BufReader::with_capacity(buffer, reader);
                 tokio::io::copy_buf(&mut reader, &mut stdin).await?
             }
             Upstream::Link(mut inlet) => {
@@ -216,13 +225,13 @@ async fn run_process(
 
         match output {
             Downstream::Stream(mut writer) => {
-                let mut stdout = BufReader::with_capacity(BUF, stdout);
+                let mut stdout = BufReader::with_capacity(buffer, stdout);
                 tokio::io::copy_buf(&mut stdout, &mut writer).await?;
                 writer.flush().await?;
                 let _ = writer.shutdown().await;
             }
             Downstream::Link(mut outlet) => {
-                let mut buf = vec![0u8; BUF].into_boxed_slice();
+                let mut buf = vec![0u8; buffer].into_boxed_slice();
 
                 loop {
                     let n = stdout.read(&mut buf).await?;
@@ -275,12 +284,12 @@ enum Source {
     },
 }
 
-impl From<Upstream> for Source {
-    fn from(upstream: Upstream) -> Self {
+impl Source {
+    fn new(upstream: Upstream, buffer: usize) -> Self {
         match upstream {
             Upstream::Stream(reader) => Source::Stream {
                 reader,
-                buf: vec![0u8; BUF].into_boxed_slice(),
+                buf: vec![0u8; buffer].into_boxed_slice(),
             },
             Upstream::Link(inlet) => Source::Link { inlet, spent: None },
         }
@@ -425,7 +434,7 @@ fn link() -> (Outlet, Inlet) {
 }
 
 impl Outlet {
-    /// Crossing a segment boundary is the one place a copy is unavoidable. The
+    /// Crossing a segment boundary is the one place a copy is unavoidable: the
     /// downstream task outlives this stack frame, so it needs owned bytes.
     async fn send(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         if bytes.is_empty() {
@@ -435,7 +444,8 @@ impl Outlet {
         let mut buf = self
             .back
             .try_recv()
-            .unwrap_or_else(|_| Vec::with_capacity(bytes.len().max(BUF)));
+            .ok()
+            .unwrap_or_else(|| Vec::with_capacity(bytes.len()));
 
         buf.clear();
         buf.extend_from_slice(bytes);

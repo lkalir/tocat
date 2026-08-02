@@ -1,6 +1,8 @@
 # tocat
 
-A socat-inspired relay built on tokio. tocat connects two endpoints (sockets, files, subprocesses, stdio, etc.) and copies bytes between them in both directions. Unlike socat, connections can be described in a TOML config file with editor completion and validation, and the bytes in flight can be passed through a pipeline of plugins.
+A socat-inspired relay built on tokio. tocat connects two endpoints (sockets, files, subprocesses, stdio, etc.) and copies bytes between them in both
+directions. Unlike socat, connections can be described in a TOML config file with editor completion and validation, and the bytes in flight can be
+passed through a pipeline of plugins.
 
 ## Status
 
@@ -9,9 +11,8 @@ tocat is in early days and has a long way to go before reaching parity with soca
 - [ ] abstract
 - [ ] abstract-listen
 - [x] exec
-- [ ] fifo
 - [x] file
-- [ ] pipe
+- [x] pipe / fifo
 - [ ] proxy
 - [ ] pty
 - [ ] socks
@@ -33,8 +34,8 @@ tocat is in early days and has a long way to go before reaching parity with soca
 The plugins that ship with tocat are
 
 - [ ] base64/unbase64 - encoding using base64
-- [ ] cipher / uncipher - symmetric stream encryption/decryption
 - [x] compress / decompress - zstd
+- [ ] encrypt / decrypt - symmetric stream encryption/decryption
 - [ ] frame / unframe - apply or strip framing to and from streams
 - [ ] hash - digest stream contents
 - [ ] limit - terminate stream after N bytes
@@ -53,11 +54,10 @@ Many configurations and options present in socat are also currently missing.
 $ cargo install --path crates/tocat-cli
 ```
 
-Plugins are cargo features. `tee` and `process` are on by default. Features are additive, so subtracting one means turning the defaults off and naming
+Plugins are cargo features. All plugins are enabled by default. Features are additive, so subtracting one means turning the defaults off and naming
 what you want back.
 
 ```console
-# Install with all plugins
 $ cargo install --path crates/tocat-cli
 # Defaults plus compression
 $ cargo install --path crates/tocat-cli --features compress
@@ -82,6 +82,8 @@ Options:
   -c, --config <PATH>      Configuration file to use.
       --no-config          Disable configuration file merging.
       --dump-config        Render the final configuration as TOML.
+  -b, --buffer-size <SIZE>
+                           Bytes per copy, e.g. 65536 or 256KiB. One buffer per direction per connection.
   -f, --from <ADDR>        Source endpoint. Fills the first positional slot.
   -t, --to <ADDR>          Sink endpoint. Fills the last positional slot.
   -p, --plugin <SPEC>      Pipeline entry: NAME[:DIRECTION][,key=value...]. Repeatable, applied in order.
@@ -150,7 +152,8 @@ $ tocat unix-listen:/tmp/tocat.sock,fork,unlink,mode=660 tcp:localhost:8080
 
 #### `file` - read and write files
 
-Files are unidirectional. They are read when they are the source and written to when they are the sink. Opening a FIFO blocks until a peer appears.
+Files are unidirectional. They are read when they are the source and written to when they are the sink. `file:` pointed at a FIFO works, but blocks
+until a peer appears and ends when the last writer leaves (see `pipe:` for the version that outlives its producers).
 
 ```console
 $ tocat file:/tmp/payload tcp:localhost:9000
@@ -162,6 +165,34 @@ $ tocat tcp-listen:9000 file:/tmp/capture,truncate
 | append   | Append instead of overwrite file                 |
 | create   | Create if missing. On by default                 |
 | truncate | Truncate file on open, ignored if append is true |
+
+#### `pipe` - named pipes
+
+Alias: `fifo`. Unidirectional like `file:`, but a rendezvous rather than storage: read as the source, written as the sink.
+
+By default tocat holds the FIFO open read-write, making itself a writer. Two things follow: opening never blocks, and the stream never ends, so
+producers can come and go without the relay noticing. That is the difference from `file:` pointed at the same path, which relays one producer and exits.
+
+```console
+$ tocat pipe:/tmp/events,create,mode=660 tcp:collector:9000
+$ myapp >> /tmp/events          # restart this all day
+```
+
+| Option      | Description                                                                                                    |
+|-------------|----------------------------------------------------------------------------------------------------------------|
+| create      | `mkfifo` the path if missing. On by default. A path that exists but is not a FIFO is an error                  |
+| hold        | Hold the FIFO open across producers. On by default; `hold=false` gives one-shot behaviour with EOF             |
+| size=N      | Kernel FIFO capacity, e.g. `size=1MiB`. Linux only, best-effort. Not the same knob as `-b` (see Buffers below) |
+| unlink      | Remove the FIFO when the relay finishes                                                                        |
+| mode=NNN    | Permissions applied after creation, explicitly, so umask does not mask them                                    |
+
+Two tocats sharing a FIFO chains relays with different pipelines, and a FIFO on each side makes a test harness you can drive entirely from a shell:
+
+```console
+$ tocat pipe:/tmp/in,create redact pipe:/tmp/out,create &
+$ cat /tmp/out &
+$ echo 'Authorization: Bearer abc123' > /tmp/in
+```
 
 #### `exec` - subprocesses
 
@@ -175,7 +206,7 @@ $ tocat tcp-listen:9000,fork "exec:/usr/bin/env cat"
 
 #### `system` - shell commands
 Runs the given string through a shell, so pipes, redirection, globbing, and variable expansion all work. Anything the string contains runs with tocat's
-privileges — don't use system with a command built from untrusted input, or in a config file others can write.
+privileges. Don't use system with a command built from untrusted input, or in a config file others can write.
 
 ```console
 $ tocat tcp-listen:9000,fork "system:grep -v DEBUG | sort -u"
@@ -186,6 +217,9 @@ $ tocat tcp-listen:9000,fork "system:grep -v DEBUG | sort -u"
 Also spelled `-`. Note that tocat's stdout carries relayed data when stdio is the sink. Logs and dumps go to stderr for this reason, and tocat refuses
 to dump to stdout.
 
+When stdout is a pipe (e.g. `tocat … | pv`) tocat enlarges its kernel buffer to match the copy buffer, since the 64 KiB default would otherwise cap every
+write. See Buffers.
+
 ```console
 $ dd if=/dev/zero | tocat - tcp:localhost:9000
 ```
@@ -194,7 +228,7 @@ $ dd if=/dev/zero | tocat - tcp:localhost:9000
 
 Bytes can be passed through a pipeline of plugins on their way between the endpoints. A plugin can watch the stream, rewrite it, or drop parts of it.
 
-Plugins are written like endpoints — a name, an optional direction, and a set of options — and go between the source and the sink on the command line.
+Plugins are written like endpoints (a name, an optional direction, and a set of options) and go between the source and the sink on the command line.
 
 ```
 name[:direction],option,option=value
@@ -211,8 +245,8 @@ entries apply in the order written, after any in the config file.
 $ tocat -f tcp-listen:8080,fork -t tcp:example.com:80 -p 'tee,format=hex'
 ```
 
-Roles are decided by position, never by looking at the text — an endpoint and a plugin are spelled the same way. The outer arguments fill whichever
-endpoint slots `--from` and `--to` left open, and whatever remains in the middle is the pipeline.
+Roles are decided by position, never by looking at the text. The outer arguments fill whichever endpoint slots `--from` and `--to` left open, 
+and whatever remains in the middle is the pipeline.
 
 ```console
 $ tocat SRC SINK                  # no plugins
@@ -271,14 +305,14 @@ $ tocat tcp-listen:8080,fork tee,format=hex tcp:example.com:80
 $ tocat tcp-listen:8080,fork 'tee:forward,file=req.bin' 'tee:reverse,file=resp.bin' tcp:example.com:80
 ```
 
-| Option        | Description                                                                        |
-|---------------|--------------------------------------------------------------------------------------|
-| `file=PATH`   | File to write to. `-`, `stderr` or omitted for stderr                              |
-| `format=hex`  | Offset, hex, and ASCII columns behind a `[source -> sink \| stage]` header          |
-| `format=raw`  | Payload bytes verbatim. Also `binary`, `raw-binary`. The default                    |
-| `append`      | Append to an existing file rather than truncating. On by default                    |
-| `width=N`     | Bytes per row in hex mode. Default is 16                                           |
-| `label=TEXT`  | Override the hex header label. Prefer `as`, which names the instance everywhere     |
+| Option        | Description                                                                     |
+|---------------|---------------------------------------------------------------------------------|
+| `file=PATH`   | File to write to. `-`, `stderr` or omitted for stderr                           |
+| `format=hex`  | Offset, hex, and ASCII columns behind a `[source -> sink \| stage]` header      |
+| `format=raw`  | Payload bytes verbatim. Also `binary`, `raw-binary`. The default                |
+| `append`      | Append to an existing file rather than truncating. On by default                |
+| `width=N`     | Bytes per row in hex mode. Default is 16                                        |
+| `label=TEXT`  | Override the hex header label. Prefer `as`, which names the instance everywhere |
 
 Entries naming the same file share one writer, so their output interleaves at chunk granularity rather than racing. Hex entries stay separable because
 each carries the connection and the stage name in its header; raw entries do not, so two raw tees on one file will produce something you cannot untangle.
@@ -295,11 +329,11 @@ $ tocat - compress:forward decompress:reverse tcp:relay.internal:9000
 
 The far end of the link runs the mirror image, and the two relays form a compressed tunnel over an otherwise plaintext hop.
 
-| Option      | Plugin       | Description                                                                                     |
-|-------------|--------------|-------------------------------------------------------------------------------------------------|
-| `level=N`   | `compress`   | zstd level, 1–22. Higher is smaller and slower. Default is 3                                    |
-| `flush`     | `compress`   | Flush after every chunk so bytes reach the peer immediately. On by default; costs ratio          |
-| `report`    | both         | Log the compression ratio when the stream ends                                                  |
+| Option      | Plugin     | Description                                                                             |
+|-------------|------------|-----------------------------------------------------------------------------------------|
+| `level=N`   | `compress` | zstd level, 1–22. Higher is smaller and slower. Default is 3                            |
+| `flush`     | `compress` | Flush after every chunk so bytes reach the peer immediately. On by default; costs ratio |
+| `report`    | both       | Log the compression ratio when the stream ends                                          |
 
 Both default to `detach`, since they are expensive enough per byte to be worth their own task.
 
@@ -319,39 +353,56 @@ argv = ["gzip", "-c"]
 stderr = "log"
 ```
 
-| Option        | Description                                                                                              |
-|---------------|------------------------------------------------------------------------------------------------------------|
-| `argv=[...]`  | Program and arguments, passed directly. No shell, no globbing, no metacharacters. Config file only        |
-| `command=STR` | A shell command line, as `system:`. Runs with tocat's privileges                                          |
-| `stderr=log`  | Capture the child's stderr and re-emit each line as a warning tagged with the stage name. The default     |
-| `stderr=inherit` | Let it go to tocat's stderr, where it interleaves with logs and dumps                                  |
-| `stderr=null` | Discard it                                                                                               |
+| Option           | Description                                                                                           |
+|------------------|-------------------------------------------------------------------------------------------------------|
+| `argv=[...]`     | Program and arguments, passed directly. No shell, no globbing, no metacharacters. Config file only    |
+| `command=STR`    | A shell command line, as `system:`. Runs with tocat's privileges                                      |
+| `stderr=log`     | Capture the child's stderr and re-emit each line as a warning tagged with the stage name. The default |
+| `stderr=inherit` | Let it go to tocat's stderr, where it interleaves with logs and dumps                                 |
+| `stderr=null`    | Discard it                                                                                            |
 
-Give one of `argv` or `command`. Only `command` works on the command line, since there is no way to write an array there — and a command containing a
-comma has to go in a config file, because commas separate options.
+Give one of `argv` or `command`. Only `command` works on the command line, since there is no way to write an array there (and a command containing a
+comma has to go in a config file, because commas separate options).
 
 Filters that emit nothing until their input closes work correctly: tocat feeds the child and drains it concurrently, and closes its stdin at end of
 stream so it flushes. `sort`, `tac` and `gzip` all behave.
 
 A non-zero exit fails that direction rather than being logged and ignored, since it means the bytes the child produced were incomplete or wrong.
 
-This is the most expensive stage tocat has. Bytes cross a pipe twice per chunk in each direction, and every connection spawns its own children — under
-`fork` with `direction = "both"`, sixty-four clients means one hundred and twenty-eight processes. It is the right price for reaching any tool on the
-system, but reach for a compiled plugin for anything hot.
-
 ### Writing a plugin
 
 Plugins implement the `Plugin` trait from the `tocat-api` crate. A plugin is a synchronous byte transformer: it is handed a chunk and decides what to
-forward, and anything that touches the outside world — writing a dump file, emitting a log line — is queued for tocat to perform rather than done in
+forward, and anything that touches the outside world (e.g. writing a dump file, emitting a log line) is queued for tocat to perform rather than done in
 place. That keeps plugins testable and off the async runtime, and it is the shape a WASM guest has to take, so the same trait will cover WASM plugins
 when they land.
 
-A few stages cannot satisfy that contract — `process` decides nothing per chunk and may emit output belonging to chunks it was handed long ago. Those
+A few stages cannot satisfy that contract e.g. `process` decides nothing per chunk and may emit output belonging to chunks it was handed long ago. Those
 describe themselves to tocat and let it do the running, rather than bending the trait to fit. Spawning is a capability of the host by construction,
 which is what keeps it out of reach of a WASM guest.
 
 Plugins that need no dependencies live as modules in `tocat-plugins`; ones that bring their own dependency tree get their own crate and are registered
 from there. Either way they are reached through one registry, so tocat itself cannot tell them apart.
+
+## Buffers
+
+tocat copies through one buffer per direction per connection, 256 KiB by default. `-b` on the command line or `buffer-size` in the config file changes
+it, as a byte count or with a binary suffix.
+
+```console
+$ tocat -b 1MiB file:/big.iso tcp:host:9000
+```
+
+```toml
+buffer-size = "64k"
+```
+
+Kernel pipe buffers are a separate resource, and they cap throughput independently: a pipe holds 64 KiB by default, so a writer stalls once that much
+is unread however large tocat's own buffer is. Where the pipe belongs to tocat (stdout when you pipe tocat into another program, and the pipes to and
+from `exec:`, `system:` and `process` children) tocat enlarges it to match the copy buffer automatically. Named FIFOs are left alone unless you ask
+with `size=`, because their buffer is shared with whoever else has the path open.
+
+Pipe resizing is Linux-only and best-effort. The kernel rounds up to a power of two, and an unprivileged process cannot exceed
+`/proc/sys/fs/pipe-max-size` (1 MiB by default). tocat warns and carries on at the default size rather than failing.
 
 ## Configuration
 
@@ -366,6 +417,7 @@ coming back from the connection.
 #:schema ./tocat.schema.json
 
 log-level = "info"
+buffer-size = "256KiB"
 
 [source]
 type = "tcp-listen"

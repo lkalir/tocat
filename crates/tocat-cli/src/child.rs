@@ -10,6 +10,8 @@ use tocat_api::StderrMode;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tracing::{debug, warn};
 
+use crate::endpoint::size_if_pipe;
+
 pub struct ChildParts {
     pub child: Child,
     pub stdin: ChildStdin,
@@ -24,6 +26,7 @@ pub fn spawn(
     args: &[String],
     shell: bool,
     stderr: StderrMode,
+    pipe_size: usize,
 ) -> anyhow::Result<ChildParts> {
     let mut cmd = if shell {
         let sh = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
@@ -49,9 +52,17 @@ pub fn spawn(
 
     let mut child = cmd.spawn().with_context(|| format!("spawning {program}"))?;
 
+    let stdin = child.stdin.take().expect("piped");
+    let stdout = child.stdout.take().expect("piped");
+
+    // A child's stdin and stdout are always pipes, and their 64 KiB default
+    // would cap the relay however large the copy buffer is.
+    size_if_pipe(&stdin, "child stdin", pipe_size);
+    size_if_pipe(&stdout, "child stdout", pipe_size);
+
     Ok(ChildParts {
-        stdin: child.stdin.take().expect("piped"),
-        stdout: child.stdout.take().expect("piped"),
+        stdin,
+        stdout,
         stderr: child.stderr.take(),
         child,
     })

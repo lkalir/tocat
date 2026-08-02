@@ -25,7 +25,7 @@ pub enum PluginError {
 
 impl PluginError {
     /// Build an unknown plugin error
-    /// 
+    ///
     /// Carries the registry's contents, because "is that feature enabled?" and
     /// "did I put an endpoint in a plugin slot?" are the two things anyone
     /// actually wants to know here.
