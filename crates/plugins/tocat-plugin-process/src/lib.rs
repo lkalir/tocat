@@ -39,7 +39,7 @@ pub struct ProcessConfig {
 
     /// A shell command line. Runs with tocat's privileges. Do not build one
     /// from untrusted input, or accept one from a config file others can write.
-    #[serde(default)]
+    #[serde(default, alias = "cmd")]
     pub command: Option<String>,
 
     #[serde(default)]

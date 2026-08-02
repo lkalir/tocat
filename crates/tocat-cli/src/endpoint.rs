@@ -1186,7 +1186,7 @@ impl FromStr for EndpointSpec {
                 size: opts.size,
                 name: opts.name,
             }),
-            "file" => Ok(Self::File {
+            "file" | "open" => Ok(Self::File {
                 path: PathBuf::from(body),
                 append: opts.append,
                 create: opts.create,
