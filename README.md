@@ -41,6 +41,7 @@ The plugins that ship with tocat are
 - [ ] limit - terminate stream after N bytes
 - [ ] pcap - save stream as pcap
 - [x] process - delegate to subprocess using stdin/stdout
+- [x] rate - measure and report throughput
 - [ ] redact - remove sensitive information from streams
 - [x] tee - mirror a path's bytes to a file or stderr, verbatim or as a hex dump
 - [ ] throttle - artificially constrict bandwidth
@@ -76,23 +77,59 @@ socat-inspired relay
 Usage: tocat [OPTIONS] [SPEC]...
 
 Arguments:
-  [SPEC]...  SOURCE [PLUGIN ...] SINK. The outer specs are endpoints; anything between them is a pipeline entry. Slots already filled by --from/--to are skipped.
+  [SPEC]...
+          SOURCE [PLUGIN ...] SINK. The outer specs are endpoints; anything between them is a pipeline entry. Slots already filled by --from/--to are skipped.
 
 Options:
-  -c, --config <PATH>      Configuration file to use.
-      --no-config          Disable configuration file merging.
-      --dump-config        Render the final configuration as TOML.
+  -c, --config <PATH>
+          Configuration file to use.
+
+      --no-config
+          Disable configuration file merging.
+
+      --dump-config
+          Render the final configuration as TOML.
+
   -b, --buffer-size <SIZE>
-                           Bytes per copy, e.g. 65536 or 256KiB. One buffer per direction per connection.
-  -f, --from <ADDR>        Source endpoint. Fills the first positional slot.
-  -t, --to <ADDR>          Sink endpoint. Fills the last positional slot.
-  -p, --plugin <SPEC>      Pipeline entry: NAME[:DIRECTION][,key=value...]. Repeatable, applied in order.
-      --no-plugins         Ignore plugins declared in the configuration file.
-      --list-plugins       List the plugins compiled into this binary and exit.
-  -v, --verbose...         Simple verbosity level.
-      --log-level <LEVEL>  Explicit verbosity level. [possible values: off, error, warn, info, debug, trace]
-  -h, --help               Print help
-  -V, --version            Print version
+          Bytes per copy, e.g. 65536 or 256KiB. One buffer per direction per connection.
+
+  -f, --from <ADDR>
+          Source endpoint. Fills the first positional slot.
+
+  -t, --to <ADDR>
+          Sink endpoint. Fills the last positional slot.
+
+  -p, --plugin <SPEC>
+          Pipeline entry: NAME[:DIRECTION][,key=value...]. Repeatable, applied in order.
+
+      --no-plugins
+          Ignore plugins declared in the configuration file.
+
+      --list-plugins
+          List the plugins compiled into this binary and exit.
+
+  -P, --progress[=<WHEN>]
+          Draw a progress line on stderr. Bare, or 'auto', draws only when stderr is a terminal; 'always' draws regardless.
+
+          Possible values:
+          - never
+          - auto:   Draw only when stderr is a terminal
+          - always: Draw regardless, as `pv --force` does
+
+  -v, --verbose...
+          Simple verbosity level.
+
+      --log-level <LEVEL>
+          Explicit verbosity level.
+          
+          [possible values: off, error, warn, info, debug, trace]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
 ```
 
 tocat can be used similarly to socat with the source and sink endpoints specified via strings, you can also use the explicit `--from` and `--to` flags
@@ -170,7 +207,7 @@ $ tocat unix-listen:/tmp/tocat.sock,fork,unlink,mode=660 tcp:localhost:8080
 
 #### `file` - read and write files
 
-Files are unidirectional. They are read when they are the source and written to when they are the sink. `file:` pointed at a FIFO works, but blocks
+Alias: `open`. Files are unidirectional. They are read when they are the source and written to when they are the sink. `file:` pointed at a FIFO works, but blocks
 until a peer appears and ends when the last writer leaves (see `pipe:` for the version that outlives its producers).
 
 ```console
@@ -399,6 +436,39 @@ stream so it flushes. `sort`, `tac` and `gzip` all behave.
 
 A non-zero exit fails that direction rather than being logged and ignored, since it means the bytes the child produced were incomplete or wrong.
 
+### `rate` - measure throughput
+
+Reports how fast bytes are moving past this point on the path. Like `tee` it never touches the payload, so it can go anywhere in a chain, including on a
+datagram path.
+
+```console
+$ tocat -f tcp-listen:9000,fork -t tcp:backend:8080 -p 'rate,interval=30s'
+$ tocat file:big.iso 'rate,as=plain' compress 'rate,as=wire' tcp:relay:9000
+```
+
+Each instance measures the traffic at its own position, so the two reports are the payload before compression and the bytes actually going on the wire.
+
+| Option          | Description                                                                                                                      |
+|-----------------|----------------------------------------------------------------------------------------------------------------------------------|
+| `interval=TIME` | How often to report: seconds, or a suffixed string (`500ms`, `30s`, `2m`). Default is `5s`. `0` reports only at end of stream    |
+| `unit=bits`     | Report decimal multiples of bits (`81.6Mbit/s`) rather than binary multiples of bytes (`10.2MiB/s`)                              |
+| `summary=false` | Suppress the total/average/peak line at end of stream                                                                            |
+| `level=LEVEL`   | Level the reports are logged at: `trace`, `debug`, `info` (the default) or `warn`                                                |
+| `file=PATH`     | Write the samples there as CSV instead of logging them: `stage,elapsed,total,delta,rate`, no header. The summary is still logged |
+| `append=false`  | Truncate an existing sample file rather than appending to it                                                                     |
+
+Reports are logs, so they follow the log sinks and the log level, and are tagged with the stage name.
+
+Reports are driven by the clock, not by chunks arriving, so they land on schedule and a stalled stream is reported rather than silent. The per-chunk
+cost is two adds and a branch; after the first chunk stamps the start, the data path never reads the clock at all.
+
+A stall is announced once and not repeated (a connection that goes quiet for an hour should not say so seven hundred times) and the report after
+traffic resumes covers the whole gap. Samples written with `file=` are a time series rather than a narrative, so those are written every interval,
+zeroes included. A datagram source never reaches end of stream, so it never prints a summary, but its periodic reports work as usual.
+
+Ticking costs one timer per direction per connection for any pipeline containing a ticking stage, which multiplies under `fork`. `interval=0` is how
+you opt out of it and keep only the summary.
+
 ### Writing a plugin
 
 Plugins implement the `Plugin` trait from the `tocat-api` crate. A plugin is a synchronous byte transformer: it is handed a chunk and decides what to
@@ -410,8 +480,10 @@ A few stages cannot satisfy that contract e.g. `process` decides nothing per chu
 describe themselves to tocat and let it do the running, rather than bending the trait to fit. Spawning is a capability of the host by construction,
 which is what keeps it out of reach of a WASM guest.
 
-Plugins that need no dependencies live as modules in `tocat-plugins`; ones that bring their own dependency tree get their own crate and are registered
-from there. Either way they are reached through one registry, so tocat itself cannot tell them apart.
+A stage that needs time rather than traffic to drive it implements `tick_interval` and `on_tick`. tocat asks once, at construction, how often the stage
+wants calling, and then calls it on that schedule for as long as the pipeline lives (whether or not bytes are moving), which is what a keepalive needs.
+Anything emitted from a tick continues downstream through the stages below it, the same way end-of-stream output cascades. The host owns the timer
+because a guest cannot reach a clock, and a segment with nothing ticking builds no timer at all.
 
 ## Buffers
 
@@ -433,6 +505,42 @@ with `size=`, because their buffer is shared with whoever else has the path open
 
 Pipe resizing is Linux-only and best-effort. The kernel rounds up to a power of two, and an unprivileged process cannot exceed
 `/proc/sys/fs/pipe-max-size` (1 MiB by default). tocat warns and carries on at the default size rather than failing.
+
+## Progress
+
+`--progress` draws a line on stderr while the relay runs.
+
+```console
+$ tocat --progress file:big.iso tcp:host:9000
+  1.23GiB 0:00:12 [   102MiB/s] [=============>        ]  42% ETA 0:00:16
+```
+
+It counts bytes at the endpoints, before any stage sees them, and it is redrawn on a timer rather than when bytes arrive.
+
+`--progress` on its own means `auto`: draw only when stderr is a terminal. `--progress=always` draws regardless, which is what you want when stderr is
+redirected to a file. `--progress=never` is the default. The same values work in the config file.
+
+```toml
+progress = "auto"
+```
+
+The bar, the percentage and the ETA need a total, which tocat only has when the source is a regular file and neither endpoint forks. Everything else
+gets the counts, the elapsed time and the rate. Traffic coming back from the sink is reported separately once there is any:
+
+```
+  1.23GiB out  340MiB in 0:00:12 [   102MiB/s]
+```
+
+Under `fork` the line aggregates every connection and shows how many are open.
+
+Two things share stderr with the display. Logs are handled: an event erases the line, prints, and the next tick redraws it, all under one lock. A `tee`
+pointed at stderr is not, and tocat warns when the two are used together. Send the dump to a file, or drop the flag.
+
+Measuring is not free. A relay with no plugins and duplex endpoints on both sides is normally handed to `copy_bidirectional`, and counting bytes needs
+a per-chunk hook that call does not offer, so `--progress` puts that case on the general copy path instead.
+
+For throughput at a point *inside* the pipeline rather than at the endpoints, see the `rate` plugin. The two answer different questions: `--progress`
+is what the transfer is doing, `rate` is what a particular stage is seeing.
 
 ## Configuration
 

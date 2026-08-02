@@ -24,6 +24,7 @@ use crate::{
     cli::Cli,
     endpoint::{Endpoint, EndpointSpec},
     logging::{LogLevel, LogSinkSpec},
+    progress::ProgressMode,
 };
 
 const CONFIG_NAMES: &[&str] = &["tocat.toml", ".tocat.toml"];
@@ -124,6 +125,7 @@ pub struct Settings {
     pub sink: EndpointSpec,
     pub plugins: Vec<PluginSpec>,
     pub buffer: usize,
+    pub progress: ProgressMode,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -137,6 +139,10 @@ pub struct Config {
     /// this multiplies: 1 MiB across 1024 connections is 2 GiB resident.
     #[serde(rename = "buffer-size")]
     pub buffer_size: Option<ByteSize>,
+    /// When to draw the progress line. Defaults to never: it is a foreground
+    /// display, and a relay is as often a daemon as it is a command.
+    #[serde(default)]
+    pub progress: Option<ProgressMode>,
     #[serde(default)]
     pub log: Vec<LogSinkSpec>,
     /// Pipeline declarations, in `[[plugin]]` order.
@@ -157,6 +163,10 @@ impl Config {
 
         if let Some(size) = cli.buffer_size {
             self.buffer_size = Some(size);
+        }
+
+        if let Some(progress) = cli.progress {
+            self.progress = Some(progress);
         }
 
         if cli.no_plugins {
@@ -297,5 +307,6 @@ pub fn resolve(config: Config) -> anyhow::Result<Settings> {
         sink: spec(config.sink, "sink")?,
         plugins: config.plugins,
         buffer: config.buffer_size.unwrap_or(DEFAULT_BUFFER).bytes(),
+        progress: config.progress.unwrap_or_default(),
     })
 }

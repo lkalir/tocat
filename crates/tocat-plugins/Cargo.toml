@@ -16,10 +16,12 @@ tocat-plugin-process = {
   path = "../plugins/tocat-plugin-process/",
   optional = true
 }
+tocat-plugin-rate = { path = "../plugins/tocat-plugin-rate", optional = true }
 tocat-plugin-tee = { path = "../plugins/tocat-plugin-tee", optional = true }
 
 [features]
-default = ["compress", "process", "tee"]
+default = ["compress", "process", "rate", "tee"]
 compress = ["dep:tocat-plugin-compress"]
 process = ["dep:tocat-plugin-process"]
+rate = ["dep:tocat-plugin-rate"]
 tee = ["dep:tocat-plugin-tee"]

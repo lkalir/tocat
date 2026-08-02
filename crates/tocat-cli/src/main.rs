@@ -21,6 +21,7 @@ mod config;
 mod endpoint;
 mod host;
 mod logging;
+mod progress;
 mod pump;
 mod relay;
 mod shutdown;
@@ -34,7 +35,7 @@ use logging::{bootstrap_logging, init_logging};
 use tocat_api::Registry;
 use tracing::{debug, error};
 
-use crate::relay::Relay;
+use crate::{progress::Progress, relay::Relay};
 
 /// How long teardown waits on blocking tasks before leaving them behind.
 ///
@@ -106,6 +107,11 @@ async fn start() -> anyhow::Result<ExitCode> {
 
     let shutdown = shutdown::install();
 
+    // Started before the relay so the display is up while the endpoints are
+    // being connected: a `tcp:` that hangs on connect should look like
+    // something waiting rather than like nothing happening.
+    let progress = progress::start(settings.progress, &settings.source, &settings.sink);
+
     // Plugin construction happens here, so a bad declaration or an unopenable
     // dump file fails before either endpoint is touched.
     let relay = match Relay::new(
@@ -114,20 +120,35 @@ async fn start() -> anyhow::Result<ExitCode> {
         settings.plugins,
         registry,
         settings.buffer,
+        progress.as_ref().map(Progress::meter),
     )
     .await
     {
         Ok(relay) => relay,
         Err(e) => {
             error!("Plugin setup failed: {e:#}");
+            finish(progress).await;
             return Ok(ExitCode::FAILURE);
         }
     };
 
-    if let Err(e) = relay.run(shutdown).await {
+    let outcome = relay.run(shutdown).await;
+
+    // Before the error is reported: the summary line belongs above the
+    // diagnostics, not wedged between them.
+    finish(progress).await;
+
+    if let Err(e) = outcome {
         error!("Relay failed: {e:#}");
         return Ok(ExitCode::FAILURE);
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Take the progress line down, if there was one.
+async fn finish(progress: Option<Progress>) {
+    if let Some(progress) = progress {
+        progress.finish().await;
+    }
 }

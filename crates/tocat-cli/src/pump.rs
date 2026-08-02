@@ -13,14 +13,29 @@
 //! the two syscalls and the kernel round-trip: a bounded in-memory channel with
 //! buffer recycling. It exists for stages that are expensive per byte and want
 //! to run concurrently with the reader.
+//!
+//! # Ticks
+//!
+//! A segment holding a stage that asked for ticks runs its read in a `select!`
+//! against a timer, so the stage hears from the clock even while the stream is
+//! idle. That relies on `Source::next` being cancel-safe, which it is: every
+//! arm of it bottoms out in `poll_read`, `UdpSocket::recv` or
+//! `mpsc::Receiver::recv`, and none of those consume anything when dropped
+//! mid-poll. Anything added there has to keep that property or the select will
+//! quietly eat bytes.
+//!
+//! Reads win the race (due to `biased`) because payload should not wait behind
+//! bookkeeping. A pipeline with nothing ticking builds no timer and awaits the
+//! read directly, exactly as before.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, anyhow, bail};
 use tocat_api::{Chain, ExternalStage, Pipeline, Segment};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::mpsc,
+    time::MissedTickBehavior,
 };
 use tracing::warn;
 
@@ -29,6 +44,7 @@ use crate::{
     child,
     endpoint::{BoxRead, BoxWrite, DatagramSocket, ReadHalf, WriteHalf},
     host::{Channels, Effects},
+    progress::Counter,
 };
 
 /// Chunks in flight per detached boundary. Deep enough to keep both sides busy,
@@ -36,12 +52,17 @@ use crate::{
 const LINK_DEPTH: usize = 2;
 
 /// Run one direction to completion, returning the bytes read from upstream.
+///
+/// `counter` is the progress display's, and is `Some` only for a datagram
+/// upstream: a stream is counted by the wrapper around its read half, which is
+/// why nothing here double counts. See [`crate::progress::count`].
 pub async fn pump(
     reader: ReadHalf,
     writer: WriteHalf,
     chain: Chain,
     channels: Arc<Channels>,
     buffer: usize,
+    counter: Option<Counter>,
 ) -> anyhow::Result<u64> {
     let meta = chain.meta().clone();
     let mut segments = chain.into_segments();
@@ -55,7 +76,7 @@ pub async fn pump(
         }
         0 => {
             run_pipeline(
-                Source::new(Upstream::Stream(reader), buffer),
+                Source::new(Upstream::Stream(reader), buffer, counter),
                 Downstream::Stream(writer).into(),
                 Pipeline::new(meta, Vec::new()),
                 channels,
@@ -69,10 +90,11 @@ pub async fn pump(
                 Downstream::Stream(writer),
                 channels,
                 buffer,
+                counter,
             )
             .await
         }
-        _ => run_segmented(reader, writer, segments, channels, buffer).await,
+        _ => run_segmented(reader, writer, segments, channels, buffer, counter).await,
     }
 }
 
@@ -101,18 +123,19 @@ async fn run_segment(
     output: Downstream,
     channels: Arc<Channels>,
     buffer: usize,
+    counter: Option<Counter>,
 ) -> anyhow::Result<u64> {
     match segment {
         Segment::Inline(pipeline) => {
             run_pipeline(
-                Source::new(input, buffer),
+                Source::new(input, buffer, counter),
                 output.into(),
                 pipeline,
                 channels,
             )
             .await
         }
-        Segment::Process(external) => run_process(external, input, output, buffer).await,
+        Segment::Process(external) => run_process(external, input, output, buffer, counter).await,
     }
 }
 
@@ -138,6 +161,7 @@ async fn run_segmented(
     mut segments: Vec<Segment>,
     channels: Arc<Channels>,
     buffer: usize,
+    counter: Option<Counter>,
 ) -> anyhow::Result<u64> {
     let n = segments.len();
 
@@ -169,9 +193,17 @@ async fn run_segmented(
         let channels = channels.clone();
 
         spawned.push(tokio::spawn(async move {
-            run_segment(segment, Upstream::Link(inlet), output, channels, buffer)
-                .await
-                .map(|_| ())
+            // No counter: only the head reads from the endpoint.
+            run_segment(
+                segment,
+                Upstream::Link(inlet),
+                output,
+                channels,
+                buffer,
+                None,
+            )
+            .await
+            .map(|_| ())
         }));
     }
 
@@ -182,7 +214,15 @@ async fn run_segmented(
         None => Downstream::Stream(writer.take().expect("a lone segment owns the writer")),
     };
 
-    let total = run_segment(head, Upstream::Stream(reader), output, channels, buffer).await?;
+    let total = run_segment(
+        head,
+        Upstream::Stream(reader),
+        output,
+        channels,
+        buffer,
+        counter,
+    )
+    .await?;
 
     for handle in spawned {
         handle.await.context("segment task panicked")??;
@@ -203,6 +243,7 @@ async fn run_process(
     input: Upstream,
     output: Downstream,
     buffer: usize,
+    counter: Option<Counter>,
 ) -> anyhow::Result<u64> {
     let (program, args) = external
         .argv
@@ -230,6 +271,11 @@ async fn run_process(
                 // byte count below is never reached.
                 loop {
                     let n = socket.recv(&mut buf).await?;
+
+                    if let Some(counter) = &counter {
+                        counter.add(n as u64);
+                    }
+
                     stdin.write_all(&buf[..n]).await?;
                     stdin.flush().await?;
                 }
@@ -330,6 +376,9 @@ enum Source {
     Datagram {
         socket: DatagramSocket,
         buf: Buffer,
+        /// A datagram socket has no reader to wrap, so the progress display's
+        /// counter is applied here instead.
+        counter: Option<Counter>,
     },
     Link {
         inlet: Inlet,
@@ -338,7 +387,7 @@ enum Source {
 }
 
 impl Source {
-    fn new(upstream: Upstream, buffer: usize) -> Self {
+    fn new(upstream: Upstream, buffer: usize, counter: Option<Counter>) -> Self {
         match upstream {
             Upstream::Stream(ReadHalf::Stream(reader)) => Source::Stream {
                 reader,
@@ -347,6 +396,7 @@ impl Source {
             Upstream::Stream(ReadHalf::Datagram(socket)) => Source::Datagram {
                 socket,
                 buf: Buffer::new(buffer),
+                counter,
             },
             Upstream::Link(inlet) => Source::Link { inlet, spent: None },
         }
@@ -365,10 +415,19 @@ impl Source {
                 let n = reader.read(&mut buf[..]).await?;
                 Ok((n > 0).then(|| &buf[..n]))
             }
-            Source::Datagram { socket, buf } => {
+            Source::Datagram {
+                socket,
+                buf,
+                counter,
+            } => {
                 // A datagram socket has no EOF: it stops when the relay does. A
                 // zero-length datagram is legal and distinct from "no more".
                 let n = socket.recv(&mut buf[..]).await?;
+
+                if let Some(counter) = counter {
+                    counter.add(n as u64);
+                }
+
                 Ok(Some(&buf[..n]))
             }
             Source::Link { inlet, spent } => {
@@ -458,7 +517,36 @@ async fn run_pipeline(
     let mut effects = Effects::new(&channels);
     let mut total = 0u64;
 
-    while let Some(chunk) = input.next().await? {
+    // One timer for the whole segment, at the shortest period any stage in it
+    // asked for. `None` for the overwhelming majority of pipelines.
+    let mut ticker = pipeline.tick_interval().map(|period| {
+        let mut ticker = tokio::time::interval(period);
+
+        // A segment that fell behind should not then fire a burst of catch-up
+        // ticks at a stage that only wanted to know the time.
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        ticker
+    });
+
+    loop {
+        let arrived = match ticker.as_mut() {
+            Some(ticker) => {
+                tokio::select! {
+                    biased;
+                    chunk = input.next() => chunk?,
+                    _ = ticker.tick() => {
+                        drive_ticks(&mut pipeline, &mut output, &channels, &mut effects).await?;
+                        continue;
+                    }
+                }
+            }
+            None => input.next().await?,
+        };
+
+        let Some(chunk) = arrived else {
+            break;
+        };
+
         total += chunk.len() as u64;
 
         // Borrows the read buffer when every stage passed through, so a chain
@@ -481,6 +569,30 @@ async fn run_pipeline(
     output.finish().await?;
 
     Ok(total)
+}
+
+/// Hand a turn to every stage whose schedule came due, writing out whatever
+/// each one emitted before the next runs.
+///
+/// One `now` for the whole sweep, so two stages due on the same wakeup measure
+/// against the same instant rather than against how long the first one took.
+async fn drive_ticks(
+    pipeline: &mut Pipeline,
+    output: &mut Dest,
+    channels: &Channels,
+    effects: &mut Effects,
+) -> anyhow::Result<()> {
+    let now = Instant::now();
+
+    while let Some(bytes) = pipeline.tick(now, &mut *effects)? {
+        output.send(bytes).await?;
+    }
+
+    if !effects.is_empty() {
+        channels.apply(effects).await?;
+    }
+
+    Ok(())
 }
 
 /// Sending half of a segment boundary, with a return path for spent buffers.

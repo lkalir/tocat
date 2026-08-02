@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::{config::ByteSize, logging::LogLevel};
+use crate::{config::ByteSize, logging::LogLevel, progress::ProgressMode};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "socat-inspired relay")]
@@ -76,6 +76,19 @@ pub struct Cli {
 
     #[arg(long, help = "List the plugins compiled into this binary and exit.")]
     pub list_plugins: bool,
+
+    #[arg(
+        short = 'P',
+        long,
+        value_name = "WHEN",
+        value_enum,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "auto",
+        help = "Draw a progress line on stderr. Bare, or 'auto', draws \
+                only when stderr is a terminal; 'always' draws regardless."
+    )]
+    pub progress: Option<ProgressMode>,
 
     #[arg(short, long, action = clap::ArgAction::Count, conflicts_with = "log_level", help = "Simple verbosity level.")]
     pub verbose: u8,

@@ -12,6 +12,12 @@
 //! A future `WasmPlugin` implements [`Plugin`] like any other; nothing in the
 //! relay needs to change.
 //!
+//! The same split covers time. A stage cannot await and cannot read a clock (a
+//! guest has no way to reach one) so a stage that needs time rather than
+//! traffic to drive it declares a period with [`Plugin::tick_interval`] and is
+//! called back through [`Plugin::on_tick`]. The host holds the timer and
+//! decides when anyone is due.
+//!
 //! # Composition
 //!
 //! Plugins are declared once and instantiated per direction. A declaration list

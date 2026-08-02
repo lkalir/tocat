@@ -35,6 +35,16 @@
         }
       ]
     },
+    "progress": {
+      "description": "When to draw the pv-style progress line on stderr. 'auto' draws it only when stderr is a terminal; 'always' draws it regardless, as `pv --force` does, which is what you want when stderr is redirected to a file. Defaults to 'never'. Overridden by -P/--progress. The line reports bytes moved at the endpoints, elapsed time and rate, and adds a bar, a percentage and an ETA when the source is a regular file and neither endpoint forks.",
+      "default": "never",
+      "type": "string",
+      "enum": [
+        "never",
+        "auto",
+        "always"
+      ]
+    },
     "log-level": {
       "$ref": "#/$defs/log-level",
       "description": "Log verbosity"
@@ -63,6 +73,9 @@
         },
         {
           "$ref": "#/$defs/plugin-process"
+        },
+        {
+          "$ref": "#/$defs/plugin-rate"
         },
         {
           "$ref": "#/$defs/plugin-other"
@@ -550,7 +563,14 @@
       ],
       "properties": {
         "type": {
-          "const": "file"
+          "type": "string",
+          "enum": [
+            "file",
+            "FILE",
+            "open",
+            "OPEN"
+          ],
+          "description": "File type tag. `open` is an alias; both name the same thing."
         },
         "path": {
           "type": "string",
@@ -917,6 +937,89 @@
         }
       }
     },
+    "plugin-rate": {
+      "title": "rate",
+      "type": "object",
+      "description": "Measure and report throughput at this point on the path. Never modifies the payload. Reports are driven by traffic rather than a clock, so a stalled stream is silent until it resumes; for a live display use the progress line instead.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "rate",
+          "description": "Selects the rate plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "interval": {
+          "description": "How often to report: a number of seconds, or a string with a suffix ('500ms', '30s', '2m'). Reports are driven by a timer, so they arrive on schedule and an idle stream is reported as stalled rather than staying silent. 0 disables the timer, leaving only the end-of-stream summary. Note that a ticking stage costs one timer per direction per connection, which multiplies under fork.",
+          "default": "5s",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+(\\.[0-9]+)? *(ms|s|sec|secs|m|min|mins)? *$"
+            }
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": "bytes",
+          "description": "'bytes' reports binary multiples of bytes (1.23GiB, 10.2MiB/s). 'bits' reports decimal multiples of bits (9.84Gbit, 81.6Mbit/s), the way network equipment is specified.",
+          "enum": [
+            "bytes",
+            "byte",
+            "bits",
+            "bit"
+          ]
+        },
+        "summary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Log a total, average and peak when the stream ends. A datagram source has no end of stream, so nothing is logged there however this is set; its periodic reports are unaffected."
+        },
+        "level": {
+          "type": "string",
+          "default": "info",
+          "description": "Level the reports are logged at. Reports are logs, not payload, so they follow the log sinks and the log level.",
+          "enum": [
+            "trace",
+            "debug",
+            "info",
+            "warn"
+          ]
+        },
+        "file": {
+          "description": "Write the periodic samples here as CSV rather than logging them: one row per sample, 'stage,elapsed,total,delta,rate', no header. Idle windows are written too, since a gap in a time series reads as missing data rather than as a stall; the log suppresses repeats instead. The summary is logged either way. Use '-', 'stderr' or '/dev/stderr' for stderr. Must not be stdout, which may carry relayed payload.",
+          "type": "string",
+          "not": {
+            "enum": [
+              "stdout",
+              "/dev/stdout",
+              "/dev/fd/1"
+            ]
+          }
+        },
+        "append": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append to an existing sample file rather than truncating it."
+        }
+      }
+    },
     "plugin-other": {
       "title": "other",
       "type": "object",
@@ -933,7 +1036,8 @@
               "tee",
               "compress",
               "decompress",
-              "process"
+              "process",
+              "rate"
             ]
           },
           "description": "Plugin to instantiate."

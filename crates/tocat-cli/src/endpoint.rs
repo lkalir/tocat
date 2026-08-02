@@ -32,7 +32,7 @@ use std::{
 };
 
 use anyhow::Context;
-use nix::sys::stat::Mode as FileMode;
+use rustix::fs::Mode as FileMode;
 use serde::{Deserialize, Serialize, Serializer, de::Error as _};
 use tocat_api::StderrMode;
 use tokio::{
@@ -351,6 +351,7 @@ pub enum EndpointSpec {
         #[serde(default)]
         name: Option<String>,
     },
+    #[serde(alias = "open", alias = "FILE", alias = "OPEN")]
     File {
         path: PathBuf,
         #[serde(default)]
@@ -458,10 +459,10 @@ fn ensure_fifo(path: &std::path::Path, create: bool, mode: Option<Mode>) -> anyh
         Err(e) => return Err(e).with_context(|| format!("stat {}", path.display())),
     }
 
-    match nix::unistd::mkfifo(path, FileMode::from_bits_truncate(0o666)) {
+    match rustix::fs::mkfifoat(rustix::fs::CWD, path, FileMode::from_bits_truncate(0o666)) {
         Ok(()) => {}
         // A racing producer may have won; anything else is fatal.
-        Err(nix::errno::Errno::EEXIST) => {}
+        Err(e) if e == rustix::io::Errno::EXIST => {}
         Err(e) => return Err(e).with_context(|| format!("mkfifo {}", path.display())),
     }
 
@@ -488,25 +489,22 @@ fn ensure_fifo(path: &std::path::Path, create: bool, mode: Option<Mode>) -> anyh
 /// worth reporting above debug.
 #[cfg(target_os = "linux")]
 pub fn size_if_pipe<F: std::os::fd::AsFd>(fd: &F, label: &str, want: usize) {
-    use nix::{
-        errno::Errno,
-        fcntl::{FcntlArg, fcntl},
-    };
+    use rustix::{io::Errno, pipe::fcntl_setpipe_size};
 
-    match fcntl(fd, FcntlArg::F_SETPIPE_SZ(want as std::ffi::c_int)) {
-        Ok(got) if got as usize == want => debug!(pipe = label, size = got, "pipe resized"),
+    match fcntl_setpipe_size(fd, want) {
+        Ok(got) if got == want => debug!(pipe = label, size = got, "pipe resized"),
         Ok(got) => debug!(
             pipe = label,
             want, got, "pipe resized to the next power of two"
         ),
 
         // Not a pipe. The common case for a file or a socket, and fine.
-        Err(Errno::EINVAL) => debug!(pipe = label, "not a pipe; leaving it alone"),
+        Err(e) if e == Errno::INVAL => debug!(pipe = label, "not a pipe; leaving it alone"),
 
         // More data is buffered than the requested size would hold.
-        Err(Errno::EBUSY) => debug!(pipe = label, want, "pipe busy; leaving it alone"),
+        Err(e) if e == Errno::BUSY => debug!(pipe = label, want, "pipe busy; leaving it alone"),
 
-        Err(Errno::EPERM) => warn!(
+        Err(e) if e == Errno::PERM => warn!(
             pipe = label,
             want, "cannot enlarge pipe past /proc/sys/fs/pipe-max-size without CAP_SYS_RESOURCE",
         ),

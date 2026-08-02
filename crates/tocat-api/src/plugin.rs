@@ -1,16 +1,18 @@
 //! The plugin traits and the contexts they are driven through.
 //!
-//! The lifecycle is three calls and two contexts. [`PluginFactory::build`] runs
+//! The lifecycle is four calls and two contexts. [`PluginFactory::build`] runs
 //! once per direction per connection with a [`BuildCtx`]: this is where config
 //! is deserialized, side channels are reserved, and anything derived from the
 //! stage's fixed position is cached. [`Plugin::on_bytes`] then runs per chunk
-//! with a [`Ctx`], and [`Plugin::on_eof`] once at the end: the last chance for
-//! a stage holding buffered bytes to emit them, and where a codec writes its
-//! epilogue.
+//! with a [`Ctx`], [`Plugin::on_tick`] runs on a schedule the stage asks for,
+//! and [`Plugin::on_eof`] once at the end: the last chance for a stage holding
+//! buffered bytes to emit them, and where a codec writes its epilogue.
 //!
 //! The split between the two contexts is the point: everything expensive or
 //! fallible belongs to build time, so the per-chunk path is a synchronous call
 //! that either forwards a slice or writes into a buffer.
+
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -388,6 +390,52 @@ pub trait Plugin: Send {
 
     /// Upstream reached EOF. Last chance to emit buffered bytes.
     fn on_eof(&mut self, ctx: &mut Ctx<'_>) -> Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+
+    /// How often this stage wants [`on_tick`](Plugin::on_tick) called, or
+    /// `None` (the default) for never.
+    ///
+    /// Read once, at the end of construction, so it must not depend on
+    /// anything that changes later. A stage whose interval is configurable
+    /// reads its config in [`PluginFactory::build`] and answers from that.
+    ///
+    /// The host owns the clock. A guest cannot read one (a WASM module has no
+    /// way to reach the host's time) which is why this is a period the stage
+    /// *asks for* rather than a timestamp it checks. The cost falls on the
+    /// relay: one timer per direction per connection for any pipeline
+    /// containing a ticking stage, so a stage asking for milliseconds is
+    /// asking every forked connection to wake up that often.
+    fn tick_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    /// The stage's schedule came due.
+    ///
+    /// Called from the same task, and under the same rules, as
+    /// [`on_bytes`](Plugin::on_bytes), it just arrives without any. This is
+    /// how a stage does anything that time rather than traffic should drive:
+    /// report a measurement, release bytes it has been holding back, emit a
+    /// keepalive. Without it a stalled stream and a finished one are
+    /// indistinguishable from inside a plugin.
+    ///
+    /// [`Ctx::input`] is empty, so there is nothing to pass through; anything
+    /// emitted here is emitted with [`Ctx::forward`] and continues downstream
+    /// through the stages *below* this one, in the same way
+    /// [`on_eof`](Plugin::on_eof) cascades. Emitting nothing is the common
+    /// case and costs nothing.
+    ///
+    /// A stage that emits from here is fabricating a message boundary on a
+    /// datagram path (the bytes belong to no datagram the peer sent) so it
+    /// should report [`datagram_safe`](Plugin::datagram_safe) as false. A
+    /// stage that only observes need not.
+    ///
+    /// Ticks run for the life of the pipeline and stop at end of stream, so
+    /// they arrive whether or not anything is moving — which is the point, and
+    /// is what a keepalive needs. A stage that has nothing to say until the
+    /// first chunk has arrived is expected to keep that state itself.
+    fn on_tick(&mut self, ctx: &mut Ctx<'_>) -> Result<()> {
         let _ = ctx;
         Ok(())
     }

@@ -6,6 +6,10 @@
 //! holds them, and dropping it early silently truncates the log.
 //!
 //! This is *only* diagnostics. Use the `tocat-plugin-tee` for payload dumping.
+//!
+//! stderr sinks write through [`LogWriter`] rather than [`std::io::stderr`], so
+//! an event erases the progress line before printing instead of landing on top
+//! of it. With no progress line on screen the two are the same thing.
 
 use std::path::PathBuf;
 
@@ -18,6 +22,8 @@ use tracing_appender::{
 use tracing_subscriber::{
     EnvFilter, Layer, Registry, filter::LevelFilter, fmt, fmt::writer::BoxMakeWriter, prelude::*,
 };
+
+use crate::progress::LogWriter;
 
 #[derive(Debug, Default, Deserialize, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -106,7 +112,7 @@ pub fn bootstrap_logging(level: LogLevel) -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(
         tracing_subscriber::registry().with(
             fmt::layer()
-                .with_writer(std::io::stderr)
+                .with_writer(LogWriter)
                 .compact()
                 .with_filter(filter(level)),
         ),
@@ -146,7 +152,7 @@ fn filter(level: LogLevel) -> EnvFilter {
 fn stderr_sink(level: LogLevel) -> Vec<BoxedLayer> {
     vec![
         fmt::layer()
-            .with_writer(std::io::stderr)
+            .with_writer(LogWriter)
             .compact()
             .with_filter(filter(level))
             .boxed(),
@@ -160,7 +166,7 @@ fn build_sink(
 ) -> anyhow::Result<BoxedLayer> {
     let (writer, format, level) = match spec {
         LogSinkSpec::Stderr { format, level } => (
-            BoxMakeWriter::new(std::io::stderr),
+            BoxMakeWriter::new(LogWriter),
             *format,
             level.unwrap_or(default_level),
         ),

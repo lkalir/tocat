@@ -10,8 +10,23 @@
 //!
 //! So a pipeline of N observers costs N virtual calls per chunk and zero
 //! copies, which is why running one is not much worse than not running one.
+//!
+//! # Ticks
+//!
+//! A stage may also ask to be called on a schedule. The pipeline owns the
+//! schedules (one deadline per ticking stage) and the host owns the timer
+//! that asks whether any of them have come due. Splitting it that way means
+//! the host wakes at one period (the shortest any stage asked for) rather than
+//! holding a timer per stage, and a pipeline with nothing ticking costs
+//! nothing at all: [`Pipeline::tick_interval`] returns `None` and no timer is
+//! created.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     Direction, PluginSpec,
@@ -50,6 +65,15 @@ pub struct Pipeline {
     a: Vec<u8>,
     /// Ping-pong buffer B
     b: Vec<u8>,
+    /// One entry per stage that asked to be ticked, in stage order.
+    ticks: Vec<Schedule>,
+}
+
+/// When a ticking stage is next owed a call.
+struct Schedule {
+    stage: usize,
+    period: Duration,
+    next: Instant,
 }
 
 impl Pipeline {
@@ -69,12 +93,32 @@ impl Pipeline {
     ) -> Self {
         debug_assert_eq!(stages.len(), names.len());
 
+        // Asked once, here, so the per-chunk path never touches it. A zero
+        // period would spin the host's timer, so it reads as "no ticks" (the
+        // same answer as `None`), which is what a stage configured with an
+        // interval of zero means by it.
+        let start = Instant::now();
+        let ticks = stages
+            .iter()
+            .enumerate()
+            .filter_map(|(stage, plugin)| {
+                let period = plugin.tick_interval().filter(|p| !p.is_zero())?;
+
+                Some(Schedule {
+                    stage,
+                    period,
+                    next: start + period,
+                })
+            })
+            .collect();
+
         Self {
             meta,
             stages,
             names,
             a: Vec::new(),
             b: Vec::new(),
+            ticks,
         }
     }
 
@@ -95,6 +139,115 @@ impl Pipeline {
 
     pub fn stage_names(&self) -> impl Iterator<Item = &str> {
         self.names.iter().map(String::as_str)
+    }
+
+    /// How often the host should ask this pipeline for ticks, or `None` when
+    /// no stage wants any.
+    ///
+    /// The shortest period any stage asked for. A stage that wanted a longer
+    /// one is simply not due on most of those wakeups, which is cheaper than a
+    /// timer each.
+    #[must_use]
+    pub fn tick_interval(&self) -> Option<Duration> {
+        self.ticks.iter().map(|schedule| schedule.period).min()
+    }
+
+    /// The next stage owed a tick at `now`, with its schedule advanced.
+    fn due(&mut self, now: Instant) -> Option<usize> {
+        let schedule = self
+            .ticks
+            .iter_mut()
+            .find(|schedule| schedule.next <= now)?;
+
+        schedule.next += schedule.period;
+
+        // Slept through several periods: resume from now rather than firing
+        // once for each one we missed. A stage that wants to know how long it
+        // was actually away measures it itself.
+        if schedule.next <= now {
+            schedule.next = now + schedule.period;
+        }
+
+        Some(schedule.stage)
+    }
+
+    /// Give one due stage its tick, and return what reached the end of the
+    /// pipeline.
+    ///
+    /// `None` means nothing was due. Call it again until it says so: two
+    /// stages can come due on the same wakeup, and each one's output has to be
+    /// written before the next runs.
+    ///
+    /// Unlike [`process`](Pipeline::process) and [`finish`](Pipeline::finish)
+    /// this does not run every stage. A tick belongs to one of them, and what
+    /// it emits cascades through the stages *below* it only, the ones above
+    /// are upstream of a chunk that did not come from them.
+    pub fn tick<'p>(
+        &'p mut self,
+        now: Instant,
+        sink: &mut dyn EffectSink,
+    ) -> Result<Option<&'p [u8]>> {
+        let Some(index) = self.due(now) else {
+            return Ok(None);
+        };
+
+        run_tick(
+            &mut self.stages[index],
+            &self.meta,
+            &self.names[index],
+            &mut self.a,
+            sink,
+        )?;
+
+        // The overwhelming case: an observer that reports and forwards
+        // nothing. No stage below it needs to hear about that.
+        if self.a.is_empty() {
+            return Ok(Some(EMPTY));
+        }
+
+        self.cascade(index + 1, sink).map(Some)
+    }
+
+    /// Push the bytes sitting in `a` through the stages from `from` onwards.
+    fn cascade<'p>(&'p mut self, from: usize, sink: &mut dyn EffectSink) -> Result<&'p [u8]> {
+        let mut in_a = true;
+
+        for index in from..self.stages.len() {
+            let emitted = if in_a {
+                run(
+                    &mut self.stages[index],
+                    &self.meta,
+                    &self.names[index],
+                    &self.a,
+                    &mut self.b,
+                    sink,
+                    false,
+                )?
+            } else {
+                run(
+                    &mut self.stages[index],
+                    &self.meta,
+                    &self.names[index],
+                    &self.b,
+                    &mut self.a,
+                    sink,
+                    false,
+                )?
+            };
+
+            if emitted != Emit::Passthrough {
+                in_a = !in_a;
+            }
+
+            let live = if in_a { self.a.len() } else { self.b.len() };
+
+            // Swallowed: it cannot become bytes again further down.
+            if live == 0 {
+                return Ok(EMPTY);
+            }
+        }
+
+        Ok(if in_a { &self.a[..] } else { &self.b[..] })
     }
 
     /// The first stage that must not carry datagrams, if any.
@@ -278,6 +431,25 @@ fn run(
     }
 
     Ok(emit)
+}
+
+/// Execute a stage's tick. There is no input, so anything it wants downstream
+/// it has to write.
+fn run_tick(
+    plugin: &mut Box<dyn Plugin>,
+    meta: &PipelineMeta,
+    stage: &str,
+    out: &mut Vec<u8>,
+    sink: &mut dyn EffectSink,
+) -> Result<()> {
+    out.clear();
+
+    // The emit flag is write-only here: with no input there is nothing to pass
+    // through, so whether anything came out is a question about `out`.
+    let mut emit = Emit::Pending;
+    let mut ctx = Ctx::new(meta, stage, EMPTY, out, &mut emit, sink);
+
+    plugin.on_tick(&mut ctx)
 }
 
 impl fmt::Debug for Pipeline {
@@ -643,8 +815,60 @@ mod tests {
         }
     }
 
+    /// Emits on every tick, the way a keepalive would.
+    struct Beacon(Duration);
+
+    impl Plugin for Beacon {
+        fn name(&self) -> &str {
+            "beacon"
+        }
+
+        fn on_bytes(&mut self, ctx: &mut Ctx<'_>, _input: &[u8]) -> Result<()> {
+            ctx.pass_through();
+            Ok(())
+        }
+
+        fn tick_interval(&self) -> Option<Duration> {
+            Some(self.0)
+        }
+
+        fn on_tick(&mut self, ctx: &mut Ctx<'_>) -> Result<()> {
+            ctx.forward(b"ping");
+            Ok(())
+        }
+    }
+
+    /// Wants ticks but never emits on one. The shape almost every ticking
+    /// stage actually has.
+    struct Quiet(Duration);
+
+    impl Plugin for Quiet {
+        fn name(&self) -> &str {
+            "quiet"
+        }
+
+        fn on_bytes(&mut self, ctx: &mut Ctx<'_>, _input: &[u8]) -> Result<()> {
+            ctx.pass_through();
+            Ok(())
+        }
+
+        fn tick_interval(&self) -> Option<Duration> {
+            Some(self.0)
+        }
+
+        fn on_tick(&mut self, ctx: &mut Ctx<'_>) -> Result<()> {
+            ctx.log(LogLevel::Info, "still here");
+            Ok(())
+        }
+    }
+
     fn meta() -> PipelineMeta {
         PipelineMeta::new(Direction::SourceToSink, "src", "sink")
+    }
+
+    /// Comfortably past any schedule set at construction.
+    fn later() -> Instant {
+        Instant::now() + Duration::from_secs(3600)
     }
 
     #[test]
@@ -692,6 +916,106 @@ mod tests {
         let refs: Vec<&PluginSpec> = specs.iter().collect();
 
         assert_eq!(display_names(&refs), ["tee#1", "audit", "tee#2"]);
+    }
+
+    #[test]
+    fn a_pipeline_with_nothing_ticking_has_no_schedule() {
+        let mut p = Pipeline::new(meta(), vec![Box::new(Observer)]);
+        let mut sink = Recorder::default();
+
+        assert_eq!(p.tick_interval(), None, "so the host builds no timer");
+        assert!(p.tick(later(), &mut sink).unwrap().is_none());
+    }
+
+    /// One timer for the segment, at the shortest period asked for; the stage
+    /// that wanted the longer one is simply not due on most wakeups.
+    #[test]
+    fn the_schedule_is_the_shortest_period_asked_for() {
+        let p = Pipeline::new(
+            meta(),
+            vec![
+                Box::new(Quiet(Duration::from_secs(30))),
+                Box::new(Beacon(Duration::from_secs(5))),
+            ],
+        );
+
+        assert_eq!(p.tick_interval(), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn a_tick_cascades_through_the_stages_below_it() {
+        let mut p = Pipeline::new(
+            meta(),
+            vec![Box::new(Beacon(Duration::from_secs(60))), Box::new(Upper)],
+        );
+        let mut sink = Recorder::default();
+
+        assert!(
+            p.tick(Instant::now(), &mut sink).unwrap().is_none(),
+            "not due yet",
+        );
+
+        let now = later();
+        assert_eq!(p.tick(now, &mut sink).unwrap(), Some(&b"PING"[..]));
+        assert!(
+            p.tick(now, &mut sink).unwrap().is_none(),
+            "one turn per stage per wakeup, however far behind the schedule is",
+        );
+    }
+
+    /// The common case has to stay free: a stage that only reports must not
+    /// push an empty chunk at everything below it.
+    #[test]
+    fn a_silent_tick_does_not_disturb_the_stages_below() {
+        let mut p = Pipeline::new(
+            meta(),
+            vec![Box::new(Quiet(Duration::from_secs(60))), Box::new(Observer)],
+        );
+        let mut sink = Recorder::default();
+
+        assert_eq!(p.tick(later(), &mut sink).unwrap(), Some(&b""[..]));
+        assert!(sink.writes.is_empty(), "the observer below never ran");
+        assert_eq!(sink.logs, ["quiet: still here"]);
+    }
+
+    /// Ticking is orthogonal to the data path: a stage above the beacon must
+    /// not see its output, and the payload must be unaffected.
+    #[test]
+    fn ticks_and_chunks_do_not_interfere() {
+        let mut p = Pipeline::new(
+            meta(),
+            vec![
+                Box::new(Observer),
+                Box::new(Beacon(Duration::from_secs(60))),
+            ],
+        );
+        let mut sink = Recorder::default();
+
+        assert_eq!(p.tick(later(), &mut sink).unwrap(), Some(&b"ping"[..]));
+        assert!(
+            sink.writes.is_empty(),
+            "the observer sits above the beacon and saw nothing",
+        );
+
+        assert_eq!(p.process(b"payload", &mut sink).unwrap(), b"payload");
+        assert_eq!(sink.writes, [(ChannelId(0), b"payload".to_vec())]);
+    }
+
+    #[test]
+    fn two_stages_due_at_once_each_get_a_turn() {
+        let mut p = Pipeline::new(
+            meta(),
+            vec![
+                Box::new(Beacon(Duration::from_secs(60))),
+                Box::new(Quiet(Duration::from_secs(60))),
+            ],
+        );
+        let mut sink = Recorder::default();
+        let now = later();
+
+        assert_eq!(p.tick(now, &mut sink).unwrap(), Some(&b"ping"[..]));
+        assert_eq!(p.tick(now, &mut sink).unwrap(), Some(&b""[..]));
+        assert!(p.tick(now, &mut sink).unwrap().is_none());
     }
 
     #[test]

@@ -26,7 +26,7 @@ use std::{
 };
 
 use anyhow::Context;
-use tocat_api::{Chain, PluginSpec, Registry};
+use tocat_api::{Chain, ChannelTarget, Direction as Flow, PluginSpec, Registry};
 use tokio::{
     net::{TcpListener, UnixListener},
     sync::Semaphore,
@@ -39,6 +39,7 @@ use crate::{
         Direction, EndpointSpec, EndpointStream, PathGuard, SyncRead, SyncWrite, bind_unix,
     },
     host::{ChannelPlan, Channels},
+    progress::{self, Counter, Meter},
     pump::pump,
     shutdown::Shutdown,
 };
@@ -105,6 +106,7 @@ fn copy_sync(
     mut writer: SyncWrite,
     shutdown: &Shutdown,
     buffer: usize,
+    counter: Option<Counter>,
 ) -> anyhow::Result<u64> {
     // Deliberately not `std::io::copy`: its kernel-offload specialisations only
     // fire for concrete types, and through a `dyn` it falls back to an 8 KiB
@@ -129,6 +131,10 @@ fn copy_sync(
 
         writer.write_all(&buf[..n])?;
         total += n as u64;
+
+        if let Some(counter) = &counter {
+            counter.add(n as u64);
+        }
     }
 
     writer.flush()?;
@@ -146,10 +152,15 @@ async fn relay_streams(
     reverse: Chain,
     channels: Arc<Channels>,
     buffer: usize,
+    meter: Option<Arc<Meter>>,
 ) -> anyhow::Result<()> {
     // Nothing declared and both ends duplex byte streams: hand the whole thing to
-    // tokio and stay out of the way
-    let (src_stream, sink_stream) = if forward.is_empty() && reverse.is_empty() {
+    // tokio and stay out of the way.
+    //
+    // Not while a meter is running: `copy_bidirectional` offers nowhere to
+    // count from, and the split path below is where a read half can be
+    // wrapped. Measuring costs the shortcut.
+    let (src_stream, sink_stream) = if forward.is_empty() && reverse.is_empty() && meter.is_none() {
         match (src_stream, sink_stream) {
             (EndpointStream::Duplex(mut a), EndpointStream::Duplex(mut b)) => {
                 let (to_sink, to_source) =
@@ -169,9 +180,27 @@ async fn relay_streams(
     let (src_read, src_write) = src_stream.into_halves();
     let (sink_read, sink_write) = sink_stream.into_halves();
 
+    // Counting happens at the endpoint, before any stage sees the bytes.
+    let (src_read, forward_count) = progress::count(meter.as_ref(), src_read, Flow::SourceToSink);
+    let (sink_read, reverse_count) = progress::count(meter.as_ref(), sink_read, Flow::SinkToSource);
+
     let (a, b) = tokio::try_join!(
-        pump(src_read, sink_write, forward, channels.clone(), buffer),
-        pump(sink_read, src_write, reverse, channels.clone(), buffer),
+        pump(
+            src_read,
+            sink_write,
+            forward,
+            channels.clone(),
+            buffer,
+            forward_count
+        ),
+        pump(
+            sink_read,
+            src_write,
+            reverse,
+            channels.clone(),
+            buffer,
+            reverse_count
+        ),
     )?;
 
     info!(bytes = a + b, "relay finished");
@@ -191,6 +220,8 @@ pub struct Relay {
     plan: ChannelPlan,
     channels: Arc<Channels>,
     buffer: usize,
+    /// Shared with the progress display, when one is running.
+    progress: Option<Arc<Meter>>,
 }
 
 impl Relay {
@@ -205,6 +236,7 @@ impl Relay {
         plugins: Vec<PluginSpec>,
         registry: Registry,
         buffer: usize,
+        progress: Option<Arc<Meter>>,
     ) -> anyhow::Result<Self> {
         let mut plan = ChannelPlan::new();
 
@@ -242,6 +274,22 @@ impl Relay {
         }
 
         plan.freeze();
+
+        // Both would be writing to the same terminal, and only one of them
+        // knows about the progress line. The dump wins the collision, since it
+        // is the payload.
+        if progress.is_some()
+            && plan
+                .targets()
+                .iter()
+                .any(|target| matches!(target, ChannelTarget::Stderr))
+        {
+            warn!(
+                "a plugin is dumping to stderr while the progress line is drawn there; send the \
+                 dump to a file, or drop --progress",
+            );
+        }
+
         let channels = Channels::open(plan.targets()).await?;
 
         // One buffer per direction per connection: worth saying out loud before
@@ -262,6 +310,7 @@ impl Relay {
             plan,
             channels,
             buffer,
+            progress,
         })
     }
 
@@ -340,16 +389,20 @@ impl Relay {
         // matters: a `file:` source paired with stdio would otherwise park a
         // thread on a stdin read whose bytes go straight to a null sink, and
         // hold the relay open waiting for an EOF nobody will send.
-        let directions = [(source.reader, sink.writer), (sink.reader, source.writer)];
+        let directions = [
+            (source.reader, sink.writer, Flow::SourceToSink),
+            (sink.reader, source.writer, Flow::SinkToSource),
+        ];
 
         let mut running = Vec::new();
-        for (reader, writer) in directions {
+        for (reader, writer, path) in directions {
             if let (Some(reader), Some(writer)) = (reader, writer) {
                 let shutdown = shutdown.clone();
                 let buffer = self.buffer;
+                let counter = self.progress.as_ref().map(|meter| meter.counter(path));
 
                 running.push(tokio::task::spawn_blocking(move || {
-                    copy_sync(reader, writer, &shutdown, buffer)
+                    copy_sync(reader, writer, &shutdown, buffer, counter)
                 }));
             }
         }
@@ -394,6 +447,7 @@ impl Relay {
             reverse,
             self.channels.clone(),
             self.buffer,
+            self.progress.clone(),
         )
         .await
     }
@@ -472,6 +526,9 @@ impl Relay {
         peer: &str,
         peer_dir: Direction,
     ) -> anyhow::Result<()> {
+        // Counted for the display's connection gauge until this returns.
+        let _connection = self.progress.as_ref().map(|meter| meter.connected());
+
         let listen = self.listening(peer_dir);
         let peer_spec = match peer_dir {
             Direction::Sink => &self.sink,
@@ -507,6 +564,7 @@ impl Relay {
             reverse,
             self.channels.clone(),
             self.buffer,
+            self.progress.clone(),
         )
         .await
     }
