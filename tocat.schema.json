@@ -22,7 +22,7 @@
       }
     },
     "buffer-size": {
-      "description": "Bytes per copy. A plain byte count or a binary suffix ('64k', '1MiB'). One buffer per direction per connection, so under `fork` this multiplies: 1 MiB across 1024 connections is 2 GiB resident. Defaults to 256 KiB. Overridden by -b.",
+      "description": "Bytes per copy. A plain byte count or a binary suffix ('64k', '1MiB'). One buffer per direction per connection, so under `fork` this multiplies: 1 MiB across 1024 connections is 2 GiB resident. Defaults to 256 KiB. Overridden by -b. On a datagram endpoint this is also the maximum message size: a larger datagram is truncated by the kernel.",
       "default": "256KiB",
       "oneOf": [
         {
@@ -236,6 +236,12 @@
           "$ref": "#/$defs/tcp-listen-endpoint"
         },
         {
+          "$ref": "#/$defs/udp-endpoint"
+        },
+        {
+          "$ref": "#/$defs/udp-listen-endpoint"
+        },
+        {
           "$ref": "#/$defs/unix-endpoint"
         },
         {
@@ -251,6 +257,8 @@
         "tcp:127.0.0.1:9000",
         "tcplisten:8000",
         "listen:8000,fork",
+        "udp:127.0.0.1:5353",
+        "udp-listen:9000",
         "unix:/tmp/tocat.sock",
         "unix-listen:/tmp/tocat.sock,fork,unlink,mode=660",
         "pipe:/tmp/events,create",
@@ -315,8 +323,8 @@
         },
         "host": {
           "type": "string",
-          "default": "localhost",
-          "description": "Host interface to bind to. Defaults to localhost."
+          "default": "127.0.0.1",
+          "description": "Interface to bind. An address rather than a hostname: `localhost` resolves to a list and only the first entry is bound, which silently picks ::1 on some machines and 127.0.0.1 on others. Use 0.0.0.0 or [::] for all interfaces."
         },
         "port": {
           "type": "integer",
@@ -335,6 +343,86 @@
           "minimum": 1,
           "default": 1024,
           "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "udp-endpoint": {
+      "title": "udp",
+      "type": "object",
+      "description": "Send datagrams to a fixed peer. UDP has no connection: this only fixes where messages go and which sender is accepted.",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "addr"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "udp",
+            "UDP",
+            "udp-connect",
+            "UDP-CONNECT"
+          ],
+          "description": "udp-connect type tag supporting standard, uppercase, and alias variations."
+        },
+        "addr": {
+          "type": "string",
+          "description": "Host and port of the peer.",
+          "examples": [
+            "127.0.0.1:5353",
+            "[::1]:9000",
+            "collector.internal:9000"
+          ]
+        },
+        "bind": {
+          "type": "string",
+          "description": "Local address to bind before fixing the peer. Defaults to an ephemeral port on the wildcard address of the peer's family, so a v6 peer gets a v6 socket.",
+          "examples": [
+            "0.0.0.0:0",
+            "127.0.0.1:5000"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "udp-listen-endpoint": {
+      "title": "udp-listen",
+      "type": "object",
+      "description": "Receive datagrams. The first sender becomes the peer for the rest of the run and everyone else is ignored — there is no per-sender demultiplexing, so `fork` does not apply here yet.",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "udp-listen",
+            "UDP-LISTEN",
+            "udplisten",
+            "UDPLISTEN"
+          ],
+          "description": "udp-listen type tag supporting standard, uppercase, and alias variations."
+        },
+        "host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Interface to bind. An address rather than a hostname: `localhost` resolves to a list and only the first entry is bound, which silently picks ::1 on some machines and 127.0.0.1 on others. Use 0.0.0.0 or [::] for all interfaces."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8000,
+          "description": "Port to bind."
         },
         "name": {
           "type": "string",

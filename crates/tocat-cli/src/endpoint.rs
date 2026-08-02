@@ -113,6 +113,42 @@ pub enum Endpoint {
 pub enum EndpointStream {
     Duplex(Box<dyn AsyncStream>),
     Split(BoxRead, BoxWrite),
+    /// A datagram socket, not `AsyncRead`/`AsyncWrite` since those traits have
+    /// no way to preserve message boundaries
+    Datagram(DatagramSocket),
+}
+
+/// A connected datagram socket
+#[derive(Clone)]
+pub enum DatagramSocket {
+    Udp(std::sync::Arc<tokio::net::UdpSocket>),
+}
+
+impl DatagramSocket {
+    /// One datagram. A message longer than `buf` is **truncated**.
+    pub async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            DatagramSocket::Udp(socket) => socket.recv(buf).await,
+        }
+    }
+
+    pub async fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            DatagramSocket::Udp(socket) => socket.send(buf).await,
+        }
+    }
+}
+
+/// The reading end of an endpoint, stream or datagram
+pub enum ReadHalf {
+    Stream(BoxRead),
+    Datagram(DatagramSocket),
+}
+
+/// The writing end of an endpoint, stream or datagram
+pub enum WriteHalf {
+    Stream(BoxWrite),
+    Datagram(DatagramSocket),
 }
 
 pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -156,24 +192,24 @@ impl EndpointStream {
         Self::Split(Box::new(empty()), Box::new(w))
     }
 
-    pub fn is_duplex(&self) -> bool {
-        matches!(self, EndpointStream::Duplex(_))
+    pub fn datagram(socket: tokio::net::UdpSocket) -> Self {
+        Self::Datagram(DatagramSocket::Udp(std::sync::Arc::new(socket)))
     }
 
-    pub fn into_split(self) -> (BoxRead, BoxWrite) {
+    pub fn into_halves(self) -> (ReadHalf, WriteHalf) {
         match self {
             Self::Duplex(s) => {
                 let (r, w) = tokio::io::split(s);
-                (Box::new(r), Box::new(w))
+                (
+                    ReadHalf::Stream(Box::new(r)),
+                    WriteHalf::Stream(Box::new(w)),
+                )
             }
-            Self::Split(r, w) => (r, w),
-        }
-    }
-
-    pub fn into_duplex(self) -> Box<dyn AsyncStream> {
-        match self {
-            Self::Duplex(s) => s,
-            Self::Split(..) => unreachable!("checked by is_duplex"),
+            Self::Split(r, w) => (ReadHalf::Stream(r), WriteHalf::Stream(w)),
+            Self::Datagram(socket) => (
+                ReadHalf::Datagram(socket.clone()),
+                WriteHalf::Datagram(socket),
+            ),
         }
     }
 }
@@ -333,6 +369,25 @@ pub enum EndpointSpec {
     },
     System {
         command: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    #[serde(alias = "UDP", alias = "udp-connect", alias = "UDP-CONNECT")]
+    Udp {
+        addr: String,
+        /// Local address to bind before connecting. Defaults to an ephemeral
+        /// port on all interfaces
+        #[serde(default)]
+        bind: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    #[serde(alias = "UDP-LISTEN", alias = "udplisten", alias = "UDPLISTEN")]
+    UdpListen {
+        #[serde(default)]
+        host: Option<String>,
+        #[serde(default)]
+        port: Option<u16>,
         #[serde(default)]
         name: Option<String>,
     },
@@ -530,7 +585,16 @@ impl EndpointSpec {
     pub fn is_listen(&self) -> bool {
         matches!(
             self,
-            EndpointSpec::TcpListen { .. } | EndpointSpec::UnixListen { .. }
+            EndpointSpec::TcpListen { .. }
+                | EndpointSpec::UnixListen { .. }
+                | EndpointSpec::UdpListen { .. }
+        )
+    }
+
+    pub fn is_datagram(&self) -> bool {
+        matches!(
+            self,
+            EndpointSpec::Udp { .. } | EndpointSpec::UdpListen { .. }
         )
     }
 
@@ -558,7 +622,7 @@ impl EndpointSpec {
                 ..
             } => format!(
                 "tcp://{}:{}",
-                host.clone().unwrap_or_else(|| "localhost".to_string()),
+                host.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
                 port.unwrap_or(8000)
             ),
             EndpointSpec::Unix { name: Some(n), .. } => n.clone(),
@@ -582,6 +646,21 @@ impl EndpointSpec {
             EndpointSpec::System { command, .. } => {
                 format!("SYSTEM({command})")
             }
+            EndpointSpec::Udp { name: Some(n), .. } => n.clone(),
+            EndpointSpec::Udp {
+                addr, name: None, ..
+            } => format!("udp://{addr}"),
+            EndpointSpec::UdpListen { name: Some(n), .. } => n.clone(),
+            EndpointSpec::UdpListen {
+                host,
+                port,
+                name: None,
+                ..
+            } => format!(
+                "udp://{}:{}",
+                host.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
+                port.unwrap_or(8000)
+            ),
         }
     }
 
@@ -710,7 +789,7 @@ impl EndpointSpec {
                 Ok(EndpointStream::stdio().into_connection())
             }
             EndpointSpec::TcpListen { host, port, .. } => {
-                let host = host.as_deref().unwrap_or("localhost");
+                let host = host.as_deref().unwrap_or("127.0.0.1");
                 let port = port.unwrap_or(8000);
                 let listener = TcpListener::bind((host, port)).await?;
                 info!("Listening for connection on {host}:{port}");
@@ -796,6 +875,58 @@ impl EndpointSpec {
                 spawn_child(program, args, false, buffer).await
             }
             EndpointSpec::System { command, .. } => spawn_child(command, &[], true, buffer).await,
+            EndpointSpec::Udp { addr, bind, .. } => {
+                // Resolve the peer first: the local socket has to be in the same address
+                // family, so a v6 peer needs a v6 wildcard. This is the same mismatch that
+                // makes a `localhost` listener unreachable, one layer down.
+                let peer = tokio::net::lookup_host(addr)
+                    .await
+                    .with_context(|| format!("resolving {addr}"))?
+                    .next()
+                    .with_context(|| format!("{addr} resolved to no address"))?;
+
+                let socket = match bind {
+                    Some(local) => tokio::net::UdpSocket::bind(local.as_str())
+                        .await
+                        .with_context(|| format!("binding {local}"))?,
+                    None => {
+                        let wildcard: std::net::SocketAddr = if peer.is_ipv4() {
+                            (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+                        } else {
+                            (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+                        };
+
+                        tokio::net::UdpSocket::bind(wildcard)
+                            .await
+                            .with_context(|| format!("binding {wildcard}"))?
+                    }
+                };
+
+                socket
+                    .connect(peer)
+                    .await
+                    .with_context(|| format!("connecting to {peer}"))?;
+
+                Ok(EndpointStream::datagram(socket).into_connection())
+            }
+            EndpointSpec::UdpListen { host, port, .. } => {
+                let host = host.as_deref().unwrap_or("127.0.0.1");
+                let port = port.unwrap_or(8000);
+                let socket = tokio::net::UdpSocket::bind((host, port)).await?;
+                info!(local = %socket.local_addr()?, "listening for datagrams");
+
+                // Peek rather than receive: the first datagram tells us who the
+                // peer is, and it has to stay queued so
+                // the relay does not eat it. There is nothing to accept: the
+                // frist sender simply becomes the peer
+                // for the rest of the run.
+                let mut probe = [0u8; 1];
+                let (_, peer) = socket.peek_from(&mut probe).await?;
+                socket.connect(peer).await?;
+                info!("Peered with {peer}");
+
+                Ok(EndpointStream::datagram(socket).into_connection())
+            }
         }
     }
 }
@@ -876,6 +1007,7 @@ struct Options {
     max_connections: Option<NonZeroUsize>,
     unlink: bool,
     hold: bool,
+    bind: Option<String>,
     size: Option<ByteSize>,
     mode: Option<Mode>,
     append: bool,
@@ -916,6 +1048,7 @@ impl Options {
                 "append" => o.append = flag(val)?,
                 "create" => o.create = flag(val)?,
                 "fork" => o.fork = flag(val)?,
+                "bind" => o.bind = Some(value(key, val)?.to_string()),
                 "hold" => o.hold = flag(val)?,
                 "size" | "pipe-size" => {
                     o.size = Some(
@@ -975,6 +1108,15 @@ fn parse_host_port(body: &str) -> Result<(Option<String>, Option<u16>), ParseEnd
     Ok((host, port))
 }
 
+fn udp_listen(body: &str, o: Options) -> Result<EndpointSpec, ParseEndpointError> {
+    let (host, port) = parse_host_port(body)?;
+    Ok(EndpointSpec::UdpListen {
+        host,
+        port,
+        name: o.name,
+    })
+}
+
 fn tcp_listen(body: &str, o: Options) -> Result<EndpointSpec, ParseEndpointError> {
     let (host, port) = parse_host_port(body)?;
     Ok(EndpointSpec::TcpListen {
@@ -1021,6 +1163,17 @@ impl FromStr for EndpointSpec {
             }),
             "tcp" | "tcp-connect" | "connect" => tcp(body, opts),
             "tcplisten" | "tcp-listen" | "listen" => tcp_listen(body, opts),
+            "udp" | "udp-connect" => {
+                if body.is_empty() {
+                    return Err(Self::Err::Empty);
+                }
+                Ok(Self::Udp {
+                    addr: body.to_owned(),
+                    bind: opts.bind,
+                    name: opts.name,
+                })
+            }
+            "udp-listen" | "udplisten" => udp_listen(body, opts),
             "stdio" => Ok(Self::Stdio { name: opts.name }),
             "unix" | "unix-connect" => Ok(Self::Unix {
                 path: PathBuf::from(body),

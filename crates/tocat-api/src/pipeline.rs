@@ -97,6 +97,16 @@ impl Pipeline {
         self.names.iter().map(String::as_str)
     }
 
+    /// The first stage that must not carry datagrams, if any.
+    #[must_use]
+    pub fn datagram_hazard(&self) -> Option<&str> {
+        self.stages
+            .iter()
+            .zip(&self.names)
+            .find(|(stage, _)| !stage.datagram_safe())
+            .map(|(_, name)| name.as_str())
+    }
+
     /// Push one chunk through every stage.
     ///
     /// Returns the bytes to send downstream, which may borrow `input` directly
@@ -325,6 +335,18 @@ impl Chain {
     #[must_use]
     pub fn into_segments(self) -> Vec<Segment> {
         self.segments
+    }
+
+    /// The first stage on this chain that must not carry datagrams, if any.
+    ///
+    /// A subprocess never can: its stdin and stdout are byte streams, so
+    /// message boundaries are gone the moment bytes cross the pipe.
+    #[must_use]
+    pub fn datagram_hazard(&self) -> Option<&str> {
+        self.segments().iter().find_map(|segment| match segment {
+            Segment::Inline(pipeline) => pipeline.datagram_hazard(),
+            Segment::Process(external) => Some(external.name.as_str()),
+        })
     }
 
     #[must_use]

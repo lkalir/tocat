@@ -26,7 +26,7 @@ use tracing::warn;
 
 use crate::{
     child,
-    endpoint::{BoxRead, BoxWrite},
+    endpoint::{BoxRead, BoxWrite, DatagramSocket, ReadHalf, WriteHalf},
     host::{Channels, Effects},
 };
 
@@ -36,16 +36,31 @@ const LINK_DEPTH: usize = 2;
 
 /// Run one direction to completion, returning the bytes read from upstream.
 pub async fn pump(
-    reader: BoxRead,
-    writer: BoxWrite,
+    reader: ReadHalf,
+    writer: WriteHalf,
     chain: Chain,
     channels: Arc<Channels>,
     buffer: usize,
 ) -> anyhow::Result<u64> {
+    let meta = chain.meta().clone();
     let mut segments = chain.into_segments();
 
     match segments.len() {
-        0 => copy_direct(reader, writer, buffer).await,
+        // Datagrams cannot take the byte-stream shortcut: `copy_buf` is free to coalesce reads,
+        // which would merge two messages into one sned. An empty pipeline preserves the
+        // on-in-one-out mapping instead
+        0 if matches!(reader, ReadHalf::Stream(_)) && matches!(writer, WriteHalf::Stream(_)) => {
+            copy_direct(reader, writer, buffer).await
+        }
+        0 => {
+            run_pipeline(
+                Source::new(Upstream::Stream(reader), buffer),
+                Downstream::Stream(writer).into(),
+                Pipeline::new(meta, Vec::new()),
+                channels,
+            )
+            .await
+        }
         1 => {
             run_segment(
                 segments.pop().expect("one segment"),
@@ -66,13 +81,13 @@ pub async fn pump(
 /// a type parameter would be a phantom on every other segment — and one the
 /// compiler could not infer at the call site.
 enum Upstream {
-    Stream(BoxRead),
+    Stream(ReadHalf),
     Link(Inlet),
 }
 
 /// Where a segment writes to: the endpoint, or the segment after it.
 enum Downstream {
-    Stream(BoxWrite),
+    Stream(WriteHalf),
     Link(Outlet),
 }
 
@@ -101,7 +116,11 @@ async fn run_segment(
 }
 
 /// No stages: runs straight through.
-async fn copy_direct(reader: BoxRead, mut writer: BoxWrite, buffer: usize) -> anyhow::Result<u64> {
+async fn copy_direct(reader: ReadHalf, writer: WriteHalf, buffer: usize) -> anyhow::Result<u64> {
+    let (ReadHalf::Stream(reader), WriteHalf::Stream(mut writer)) = (reader, writer) else {
+        unreachable!("checked by the caller");
+    };
+
     let mut reader = BufReader::with_capacity(buffer, reader);
     let total = tokio::io::copy_buf(&mut reader, &mut writer).await?;
 
@@ -113,8 +132,8 @@ async fn copy_direct(reader: BoxRead, mut writer: BoxWrite, buffer: usize) -> an
 
 /// Two or more segments, joined by bounded channels.
 async fn run_segmented(
-    reader: BoxRead,
-    writer: BoxWrite,
+    reader: ReadHalf,
+    writer: WriteHalf,
     mut segments: Vec<Segment>,
     channels: Arc<Channels>,
     buffer: usize,
@@ -196,9 +215,23 @@ async fn run_process(
         let mut stdin = parts.stdin;
 
         let total = match input {
-            Upstream::Stream(reader) => {
+            Upstream::Stream(ReadHalf::Stream(reader)) => {
                 let mut reader = BufReader::with_capacity(buffer, reader);
                 tokio::io::copy_buf(&mut reader, &mut stdin).await?
+            }
+            Upstream::Stream(ReadHalf::Datagram(socket)) => {
+                // No EOF on a datagram source, so stdin is never closed and the
+                // child never flushes on its own: this needs a filter that
+                // streams its output. It ends when the relay does.
+                let mut buf = vec![0u8; buffer].into_boxed_slice();
+
+                // Diverges: the loop has no break, so it types as `!` and the
+                // byte count below is never reached.
+                loop {
+                    let n = socket.recv(&mut buf).await?;
+                    stdin.write_all(&buf[..n]).await?;
+                    stdin.flush().await?;
+                }
             }
             Upstream::Link(mut inlet) => {
                 let mut total = 0u64;
@@ -224,7 +257,21 @@ async fn run_process(
         let mut stdout = parts.stdout;
 
         match output {
-            Downstream::Stream(mut writer) => {
+            Downstream::Stream(WriteHalf::Datagram(socket)) => {
+                // One read becomes one datagram. The child's output has no
+                // boundaries in it, so these are invented from wherever the
+                // reads land.
+                let mut buf = vec![0u8; buffer].into_boxed_slice();
+
+                loop {
+                    let n = stdout.read(&mut buf).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    socket.send(&buf[..n]).await?;
+                }
+            }
+            Downstream::Stream(WriteHalf::Stream(mut writer)) => {
                 let mut stdout = BufReader::with_capacity(buffer, stdout);
                 tokio::io::copy_buf(&mut stdout, &mut writer).await?;
                 writer.flush().await?;
@@ -278,6 +325,11 @@ enum Source {
         reader: BoxRead,
         buf: Box<[u8]>,
     },
+    /// One `next` call is one datagram.
+    Datagram {
+        socket: DatagramSocket,
+        buf: Box<[u8]>,
+    },
     Link {
         inlet: Inlet,
         spent: Option<Vec<u8>>,
@@ -287,8 +339,12 @@ enum Source {
 impl Source {
     fn new(upstream: Upstream, buffer: usize) -> Self {
         match upstream {
-            Upstream::Stream(reader) => Source::Stream {
+            Upstream::Stream(ReadHalf::Stream(reader)) => Source::Stream {
                 reader,
+                buf: vec![0u8; buffer].into_boxed_slice(),
+            },
+            Upstream::Stream(ReadHalf::Datagram(socket)) => Source::Datagram {
+                socket,
                 buf: vec![0u8; buffer].into_boxed_slice(),
             },
             Upstream::Link(inlet) => Source::Link { inlet, spent: None },
@@ -308,6 +364,12 @@ impl Source {
                 let n = reader.read(&mut buf[..]).await?;
                 Ok((n > 0).then(|| &buf[..n]))
             }
+            Source::Datagram { socket, buf } => {
+                // A datagram socket has no EOF: it stops when the relay does. A
+                // zero-length datagram is legal and distinct from "no more".
+                let n = socket.recv(&mut buf[..]).await?;
+                Ok(Some(&buf[..n]))
+            }
             Source::Link { inlet, spent } => {
                 if let Some(parcel) = spent.take() {
                     inlet.release(parcel);
@@ -325,13 +387,16 @@ impl Source {
 /// Where a segment's bytes go.
 enum Dest {
     Stream(BoxWrite),
+    /// Whatever a stage emitted is sent as exactly one datagram.
+    Datagram(DatagramSocket),
     Link(Outlet),
 }
 
 impl From<Downstream> for Dest {
     fn from(downstream: Downstream) -> Self {
         match downstream {
-            Downstream::Stream(writer) => Dest::Stream(writer),
+            Downstream::Stream(WriteHalf::Stream(writer)) => Dest::Stream(writer),
+            Downstream::Stream(WriteHalf::Datagram(socket)) => Dest::Datagram(socket),
             Downstream::Link(outlet) => Dest::Link(outlet),
         }
     }
@@ -343,6 +408,19 @@ impl Dest {
             Dest::Stream(writer) => {
                 if !bytes.is_empty() {
                     writer.write_all(bytes).await?;
+                }
+            }
+            Dest::Datagram(socket) => {
+                // Not sent when empty. `run_pipeline` calls this once more at end of streamwith
+                // whatever `finish` produced, which is usually nothing. On a
+                // datagram sink that would put a spurious zero-length message on the wire. Many
+                // peers read that as end of stream and close.
+                //
+                // The cost is that a genuine zero-length datagram is dropped rather than
+                // forwarded. That is the rarer case, and a silent extra message
+                // is worse than a missing empty one
+                if !bytes.is_empty() {
+                    socket.send(bytes).await?;
                 }
             }
             Dest::Link(outlet) => outlet.send(bytes).await?,
@@ -359,6 +437,7 @@ impl Dest {
                 writer.flush().await?;
                 let _ = writer.shutdown().await;
             }
+            Dest::Datagram(_) => {}
             Dest::Link(outlet) => drop(outlet),
         }
 

@@ -391,6 +391,23 @@ pub trait Plugin: Send {
         let _ = ctx;
         Ok(())
     }
+
+    /// Whether this stage may sit on a path carrying datagrams.
+    ///
+    /// On a byte stream a chunk is an arbitrary slice: a stage may buffer,
+    /// split or coalesce freely, and the host is free to do the same. On a
+    /// datagram path the chunk *is* the message: one `on_bytes` call per
+    /// datagram, and whatever it emits is sent as exactly one datagram. A
+    /// stage that buffers across calls, or emits two messages' worth from one,
+    /// silently corrupts the protocol.
+    ///
+    /// Defaults to false because that is the safe answer for a stage that has
+    /// not thought about it, including any plugin loaded from outside this
+    /// binary. A pure observer that only calls `pass_through` can say true;
+    /// anything holding state across calls should not.
+    fn datagram_safe(&self) -> bool {
+        false
+    }
 }
 
 /// Constructs [`Plugin`] instances from a declared entry.

@@ -28,7 +28,6 @@ use std::{
 use anyhow::Context;
 use tocat_api::{Chain, PluginSpec, Registry};
 use tokio::{
-    io::{AsyncWriteExt, BufReader},
     net::{TcpListener, UnixListener},
     sync::Semaphore,
 };
@@ -53,10 +52,10 @@ impl Listener {
     async fn bind(spec: &EndpointSpec) -> anyhow::Result<(Self, Option<PathGuard>)> {
         match spec {
             EndpointSpec::TcpListen { host, port, .. } => {
-                let host = host.as_deref().unwrap_or("localhost");
+                let host = host.as_deref().unwrap_or("127.0.0.1");
                 let port = port.unwrap_or(8000);
                 let l = TcpListener::bind((host, port)).await?;
-                info!(%host, port, "listening");
+                info!(local = %l.local_addr()?, "listening");
                 Ok((Listener::Tcp(l), None))
             }
             EndpointSpec::UnixListen {
@@ -99,39 +98,6 @@ fn is_fatal_accept(e: &std::io::Error) -> bool {
     )
 }
 
-/// Fast-path for copying data between split endpoints.
-async fn copy_split(
-    src: EndpointStream,
-    sink: EndpointStream,
-    buffer: usize,
-) -> anyhow::Result<u64> {
-    let (src_read, src_write) = src.into_split();
-    let (sink_read, sink_write) = sink.into_split();
-
-    // Readers are buffered because `copy_buf` needs `AsyncBufRead`. Writers are
-    // not: `copy_buf` hands them a full 256 KiB slice already, so a `BufWriter`
-    // would only copy the payload into a second buffer to write the same bytes.
-    let mut src_read = BufReader::with_capacity(buffer, src_read);
-    let mut sink_read = BufReader::with_capacity(buffer, sink_read);
-    let mut src_write = src_write;
-    let mut sink_write = sink_write;
-
-    let forward = async {
-        let n = tokio::io::copy_buf(&mut src_read, &mut sink_write).await?;
-        sink_write.shutdown().await?;
-        Ok::<_, std::io::Error>(n)
-    };
-
-    let reverse = async {
-        let n = tokio::io::copy_buf(&mut sink_read, &mut src_write).await?;
-        src_write.shutdown().await?;
-        Ok::<_, std::io::Error>(n)
-    };
-
-    let (a, b) = tokio::try_join!(forward, reverse)?;
-    Ok(a + b)
-}
-
 /// Fast-path for copying data between synchronous streams.
 fn copy_sync(
     mut reader: SyncRead,
@@ -169,23 +135,6 @@ fn copy_sync(
     Ok(total)
 }
 
-/// The plugin-free fast-path.
-async fn copy_fast(
-    src_stream: EndpointStream,
-    sink_stream: EndpointStream,
-    buffer: usize,
-) -> anyhow::Result<u64> {
-    // If both streams are duplex, we can use the fast bidirectional copy from tokio
-    if src_stream.is_duplex() && sink_stream.is_duplex() {
-        let (mut a, mut b) = (src_stream.into_duplex(), sink_stream.into_duplex());
-        let (x, y) =
-            tokio::io::copy_bidirectional_with_sizes(&mut a, &mut b, buffer, buffer).await?;
-        return Ok(x + y);
-    }
-
-    copy_split(src_stream, sink_stream, buffer).await
-}
-
 /// Drive the relay.
 ///
 /// Delegates to a fast-path if there are no plugins.
@@ -197,17 +146,27 @@ async fn relay_streams(
     channels: Arc<Channels>,
     buffer: usize,
 ) -> anyhow::Result<()> {
-    // Nothing declared on either path: keep the old fast path exactly.
-    if forward.is_empty() && reverse.is_empty() {
-        let total = copy_fast(src_stream, sink_stream, buffer).await?;
-        info!(bytes = total, "relay finished");
-        return Ok(());
-    }
+    // Nothing declared and both ends duplex byte streams: hand the whole thing to
+    // tokio and stay out of the way
+    let (src_stream, sink_stream) = if forward.is_empty() && reverse.is_empty() {
+        match (src_stream, sink_stream) {
+            (EndpointStream::Duplex(mut a), EndpointStream::Duplex(mut b)) => {
+                let (to_sink, to_source) =
+                    tokio::io::copy_bidirectional_with_sizes(&mut a, &mut b, buffer, buffer)
+                        .await?;
+                info!(bytes = to_sink + to_source, "relay finished");
+                return Ok(());
+            }
+            pair => pair,
+        }
+    } else {
+        (src_stream, sink_stream)
+    };
 
     // A chain on one path only still leaves the other on a plain copy: `pump`
     // dispatches per direction.
-    let (src_read, src_write) = src_stream.into_split();
-    let (sink_read, sink_write) = sink_stream.into_split();
+    let (src_read, src_write) = src_stream.into_halves();
+    let (sink_read, sink_write) = sink_stream.into_halves();
 
     let (a, b) = tokio::try_join!(
         pump(src_read, sink_write, forward, channels.clone(), buffer),
@@ -259,6 +218,27 @@ impl Relay {
             channels = plan.targets().len(),
             "plugin chains resolved",
         );
+
+        // A stage that reshapes byttes cannot preserve message boundaries, so a
+        // datagram *sink* may receive well-formed messages containing nonsense. Warn
+        // rather than refuse: the operator may know the peer tolerates it.
+        //
+        // Checked per direction against that direction's downstream end. A datagram
+        // source feeding a stream sink loses nothing
+        for (chain, downstream, direction) in [
+            (&forward, &sink, "source-to-sink"),
+            (&reverse, &source, "sink-to-source"),
+        ] {
+            if downstream.is_datagram()
+                && let Some(stage) = chain.datagram_hazard()
+            {
+                warn!(
+                    stage, direction, endpoint = %downstream.name(),
+                    "stage may not preserve message boundaries; datagrams send to this endpoint \
+                    may be split, merged, or malformed",
+                );
+            }
+        }
 
         plan.freeze();
         let channels = Channels::open(plan.targets()).await?;

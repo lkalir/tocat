@@ -22,8 +22,8 @@ tocat is in early days and has a long way to go before reaching parity with soca
 - [x] tcp-listen
 - [ ] tls
 - [ ] tls-listen
-- [ ] udp
-- [ ] udp-listen
+- [x] udp
+- [x] udp-listen
 - [x] unix
 - [x] unix-listen
 - [ ] unix-dgram
@@ -124,7 +124,7 @@ $ tocat - tcp:[::1]:9000
 
 ####  `tcp-listen` - Accept inbound TCP connections
 
-Aliases: `tcplisten`, `listen`. Defaults to `localhost:8000`
+Aliases: `tcplisten`, `listen`. Defaults to `127.0.0.1:8000`.
 
 ```console
 $ tocat tcp-listen:9000 -
@@ -136,6 +136,24 @@ $ tocat tcp-listen:0.0.0.0:9000,fork tcp:localhost:8080
 | fork              | Create a task for each client, without this option tocat serves a single connection and then terminates |
 | max-connections=N | Concurrent connection ceiling. Default is 1024                                                          |
 
+
+#### `udp` and `udp-listen` - datagrams
+
+Messages rather than a byte stream. `udp:` fixes a peer to send to; `udp-listen:` binds a port and peers with the first sender. Defaults to
+`127.0.0.1:8000`, as `tcp-listen`.
+
+```console
+$ tocat udp-listen:9000 tcp:backend:80
+$ tocat - udp:127.0.0.1:5353
+$ tocat udp-listen:5353 'tee,format=hex' udp:8.8.8.8:53
+```
+
+| Option    | Description                                                                                    |
+|-----------|------------------------------------------------------------------------------------------------|
+| bind=ADDR | `udp:` only. Local address to bind. Defaults to an ephemeral port in the peer's address family |
+
+There is no per-sender demultiplexing yet, so `udp-listen` peers with whoever sends first and ignores everyone else; `fork` does not apply. A datagram
+source also has no end of stream, so a relay with one runs until interrupted.
 
 #### `unix` and `unix-listen` - Unix domain sockets
 
@@ -295,6 +313,18 @@ Two options are handled by tocat rather than the plugin, and work on any entry.
 `process` always runs on its own task, so `detach = false` on one is rejected rather than ignored.
 
 If nothing is declared on a path, that direction is copied straight through with no plugin machinery in the way.
+
+### Datagrams
+
+On a byte stream a chunk is an arbitrary slice, and a stage may buffer, split or coalesce it freely. On a datagram path the chunk *is* the message.
+A stage that holds bytes across calls, or emits two messages' worth from one, will produce well-formed datagrams containing
+nonsense.
+
+tocat warns when a stage that may not preserve boundaries sits on a path whose *destination* is a datagram endpoint, naming the stage, and relays
+anyway. 
+
+Sending datagrams *into* a stream sink is unremarkable and draws no warning. So `udp-listen:9000 compress:forward tcp:collector:9000` is fine,
+while `udp-listen:9000 compress udp:peer:9000` will warn.
 
 ### `tee` - mirror the stream
 
