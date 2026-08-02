@@ -32,6 +32,7 @@ use crate::{
     Direction, PluginSpec,
     channel::HostBuilder,
     error::{PluginError, Result},
+    normalize,
     plugin::{
         BuildCtx, Ctx, EffectSink, Emit, Execution, ExternalStage, PipelineMeta, Plugin,
         PluginFactory, Stage, StageInfo,
@@ -550,21 +551,25 @@ impl Registry {
     }
 
     pub fn register_arc(&mut self, factory: Arc<dyn PluginFactory>) -> &mut Self {
-        self.factories.insert(factory.name().to_string(), factory);
+        self.factories.insert(normalize(factory.name()), factory);
         self
     }
 
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Arc<dyn PluginFactory>> {
-        self.factories.get(name)
+        self.factories.get(&normalize(name))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn PluginFactory>> {
         self.factories.values()
     }
 
+    /// The names plugins call themselves, not the normalized keys they are
+    /// stored under: these are shown to people, in `--list-plugins` and in the
+    /// suggestions on an unknown plugin.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.factories.keys().map(String::as_str)
+        // Keys are normalized, but name() preserves the original
+        self.factories.values().map(|f| f.name())
     }
 
     /// Build the chain for one direction.

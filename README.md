@@ -148,7 +148,9 @@ scheme:target,option,option=value
 ```
 
 Bare options mean true, so `fork` and `fork=true` are equivalent. Schemes and options may have various aliases. If an option is specified multiple times,
-the last instance takes precedence.
+the last instance takes precedence. Options belong to the scheme that documents them: anything else is an error rather than being ignored, so
+`tcp:80,append` is rejected. Spelling is forgiving. Case is ignored and dashes and underscores are removed for schemes and option keys. Values
+remain untouched.
 
 #### `tcp` - Connect to a TCP socket
 

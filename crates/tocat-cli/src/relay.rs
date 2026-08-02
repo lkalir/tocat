@@ -35,9 +35,7 @@ use tracing::{Instrument, debug, error, info, warn};
 
 use crate::{
     buffer::Buffer,
-    endpoint::{
-        Direction, EndpointSpec, EndpointStream, PathGuard, SyncRead, SyncWrite, bind_unix,
-    },
+    endpoint::{Direction, EndpointSpec, EndpointStream, PathGuard, SyncRead, SyncWrite},
     host::{ChannelPlan, Channels},
     progress::{self, Counter, Meter},
     pump::pump,
@@ -53,19 +51,15 @@ impl Listener {
     /// Start listener.
     async fn bind(spec: &EndpointSpec) -> anyhow::Result<(Self, Option<PathGuard>)> {
         match spec {
-            EndpointSpec::TcpListen { host, port, .. } => {
-                let host = host.as_deref().unwrap_or("127.0.0.1");
-                let port = port.unwrap_or(8000);
-                let l = TcpListener::bind((host, port)).await?;
+            EndpointSpec::TcpListen(e) => {
+                let l = e.bind().await?;
                 info!(local = %l.local_addr()?, "listening");
                 Ok((Listener::Tcp(l), None))
             }
-            EndpointSpec::UnixListen {
-                path, unlink, mode, ..
-            } => {
-                let l = bind_unix(path, *unlink, *mode).await?;
-                info!(path = %path.display(), "listening");
-                Ok((Listener::Unix(l), Some(PathGuard(path.clone()))))
+            EndpointSpec::UnixListen(e) => {
+                let l = e.bind().await?;
+                info!(path = %e.path.display(), "listening");
+                Ok((Listener::Unix(l), Some(PathGuard(e.path.clone()))))
             }
             _ => anyhow::bail!("fork is only supported on listening endpoints"),
         }

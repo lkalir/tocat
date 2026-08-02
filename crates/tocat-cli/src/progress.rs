@@ -309,8 +309,8 @@ fn expected_size(source: &EndpointSpec, sink: &EndpointSpec) -> Option<u64> {
     }
 
     match source {
-        EndpointSpec::File { path, .. } => {
-            let metadata = std::fs::metadata(path).ok()?;
+        EndpointSpec::File(e) => {
+            let metadata = std::fs::metadata(&e.path).ok()?;
             metadata.is_file().then_some(metadata.len())
         }
         _ => None,

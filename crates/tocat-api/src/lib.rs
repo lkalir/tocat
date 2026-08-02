@@ -36,17 +36,21 @@
 
 pub mod channel;
 pub mod error;
+pub mod forgiving;
+pub mod normalize;
 pub mod pipeline;
 pub mod plugin;
 
 use std::{fmt, str::FromStr};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 pub use crate::{
     channel::{ChannelId, ChannelTarget, HostBuilder},
     error::{PluginError, Result},
+    forgiving::Forgiving,
+    normalize::{canonical, normalize},
     pipeline::{Chain, Pipeline, Registry, Segment},
     plugin::{
         BuildCtx, Ctx, EffectSink, Emit, Execution, ExternalStage, LogLevel, PipelineMeta, Plugin,
@@ -96,21 +100,22 @@ impl fmt::Display for Direction {
 ///
 /// [`DirectionSpec::Both`] instantiates the plugin twice — once per direction —
 /// rather than sharing one instance between them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DirectionSpec {
-    #[serde(alias = "forward", alias = "source", alias = "src-to-sink")]
     SourceToSink,
-    #[serde(alias = "reverse", alias = "sink", alias = "sink-to-src")]
     SinkToSource,
     #[default]
-    #[serde(
-        alias = "bidi",
-        alias = "bidirectional",
-        alias = "duplex",
-        alias = "all"
-    )]
     Both,
+}
+
+/// Deserialized through [`FromStr`] so that a config file accepts exactly what
+/// the command line does.
+impl<'de> Deserialize<'de> for DirectionSpec {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 impl DirectionSpec {
@@ -159,11 +164,11 @@ impl FromStr for DirectionSpec {
     type Err = ParseDirectionError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
-            "source-to-sink" | "src-to-sink" | "forward" | "source" | "src" | "out" => {
+        match normalize(s.trim()).as_str() {
+            "sourcetosink" | "srctosink" | "forward" | "fwd" | "source" | "src" | "out" => {
                 Ok(DirectionSpec::SourceToSink)
             }
-            "sink-to-source" | "sink-to-src" | "reverse" | "sink" | "in" => {
+            "sinktosource" | "sinktosrc" | "reverse" | "rev" | "sink" | "in" => {
                 Ok(DirectionSpec::SinkToSource)
             }
             "both" | "bidi" | "bidirectional" | "duplex" | "all" => Ok(DirectionSpec::Both),

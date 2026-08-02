@@ -21,6 +21,7 @@ use crate::{
     Direction,
     channel::{ChannelId, ChannelTarget, HostBuilder},
     error::{PluginError, Result},
+    forgiving::Forgiving,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -307,8 +308,14 @@ impl<'a> BuildCtx<'a> {
     }
 
     /// Deserialize the entry's options into the plugin's own config type.
+    ///
+    /// Through [`Forgiving`], so option keys and enum values are matched the
+    /// way every other identifier in tocat is: case-insensitively, with dashes
+    /// and underscores treated as noise. A plugin declares its config exactly
+    /// as it would otherwise, including `deny_unknown_fields`, and needs to
+    /// know nothing about this.
     pub fn config<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_value(Value::Object(self.config.clone()))
+        T::deserialize(Forgiving(Value::Object(self.config.clone())))
             .map_err(|e| PluginError::config(self.name, e))
     }
 

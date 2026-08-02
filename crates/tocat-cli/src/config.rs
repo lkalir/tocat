@@ -18,7 +18,7 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tocat_api::{DirectionSpec, PluginSpec};
+use tocat_api::{DirectionSpec, PluginSpec, normalize};
 
 use crate::{
     cli::Cli,
@@ -230,18 +230,21 @@ pub fn parse_plugin_spec(raw: &str) -> anyhow::Result<PluginSpec> {
             None => (opt, Value::Bool(true)),
         };
 
-        // Placement and identity are the host's business, not the plugin's.
-        if key == "detach" {
-            detach = value.as_bool();
-            continue;
+        // Reserved in every spelling, since that is how they are matched.
+        match normalize(key).as_str() {
+            "detach" => {
+                detach = value.as_bool();
+            }
+            "as" => {
+                alias = value.as_str().map(str::to_string);
+            }
+            // The key goes on as the user wrote it. Matching it against what the plugin declares is
+            // the plugin's own deserialization, which needs the original to recognize a
+            // `#[serde(alias)]`.
+            _ => {
+                config.insert(key.to_string(), value);
+            }
         }
-
-        if key == "as" {
-            alias = value.as_str().map(str::to_string);
-            continue;
-        }
-
-        config.insert(key.to_string(), value);
     }
 
     Ok(PluginSpec {
