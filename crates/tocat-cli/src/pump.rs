@@ -25,6 +25,7 @@ use tokio::{
 use tracing::warn;
 
 use crate::{
+    buffer::Buffer,
     child,
     endpoint::{BoxRead, BoxWrite, DatagramSocket, ReadHalf, WriteHalf},
     host::{Channels, Effects},
@@ -223,7 +224,7 @@ async fn run_process(
                 // No EOF on a datagram source, so stdin is never closed and the
                 // child never flushes on its own: this needs a filter that
                 // streams its output. It ends when the relay does.
-                let mut buf = vec![0u8; buffer].into_boxed_slice();
+                let mut buf = Buffer::new(buffer);
 
                 // Diverges: the loop has no break, so it types as `!` and the
                 // byte count below is never reached.
@@ -261,7 +262,7 @@ async fn run_process(
                 // One read becomes one datagram. The child's output has no
                 // boundaries in it, so these are invented from wherever the
                 // reads land.
-                let mut buf = vec![0u8; buffer].into_boxed_slice();
+                let mut buf = Buffer::new(buffer);
 
                 loop {
                     let n = stdout.read(&mut buf).await?;
@@ -278,7 +279,7 @@ async fn run_process(
                 let _ = writer.shutdown().await;
             }
             Downstream::Link(mut outlet) => {
-                let mut buf = vec![0u8; buffer].into_boxed_slice();
+                let mut buf = Buffer::new(buffer);
 
                 loop {
                     let n = stdout.read(&mut buf).await?;
@@ -323,12 +324,12 @@ async fn run_process(
 enum Source {
     Stream {
         reader: BoxRead,
-        buf: Box<[u8]>,
+        buf: Buffer,
     },
     /// One `next` call is one datagram.
     Datagram {
         socket: DatagramSocket,
-        buf: Box<[u8]>,
+        buf: Buffer,
     },
     Link {
         inlet: Inlet,
@@ -341,11 +342,11 @@ impl Source {
         match upstream {
             Upstream::Stream(ReadHalf::Stream(reader)) => Source::Stream {
                 reader,
-                buf: vec![0u8; buffer].into_boxed_slice(),
+                buf: Buffer::new(buffer),
             },
             Upstream::Stream(ReadHalf::Datagram(socket)) => Source::Datagram {
                 socket,
-                buf: vec![0u8; buffer].into_boxed_slice(),
+                buf: Buffer::new(buffer),
             },
             Upstream::Link(inlet) => Source::Link { inlet, spent: None },
         }

@@ -112,6 +112,7 @@
             # other utils
             tombi
             pv
+            hyperfine
           ];
 
           # tokio-console requires this cfg across the whole build graph.

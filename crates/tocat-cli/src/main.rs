@@ -14,6 +14,7 @@
 //! and opens its side channels, so a bad declaration fails here rather than on
 //! the first byte of the first connection.
 
+mod buffer;
 mod child;
 mod cli;
 mod config;

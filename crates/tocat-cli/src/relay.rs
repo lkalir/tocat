@@ -34,6 +34,7 @@ use tokio::{
 use tracing::{Instrument, debug, error, info, warn};
 
 use crate::{
+    buffer::Buffer,
     endpoint::{
         Direction, EndpointSpec, EndpointStream, PathGuard, SyncRead, SyncWrite, bind_unix,
     },
@@ -108,7 +109,7 @@ fn copy_sync(
     // Deliberately not `std::io::copy`: its kernel-offload specialisations only
     // fire for concrete types, and through a `dyn` it falls back to an 8 KiB
     // stack buffer: 32x the syscalls for the same bytes.
-    let mut buf = vec![0u8; buffer].into_boxed_slice();
+    let mut buf = Buffer::new(buffer);
     let mut total = 0u64;
 
     loop {
