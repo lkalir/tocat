@@ -12,16 +12,23 @@ tocat-plugin-compress = {
   path = "../plugins/tocat-plugin-compress",
   optional = true
 }
+tocat-plugin-limit = { path = "../plugins/tocat-plugin-limit", optional = true }
 tocat-plugin-process = {
   path = "../plugins/tocat-plugin-process/",
   optional = true
 }
 tocat-plugin-rate = { path = "../plugins/tocat-plugin-rate", optional = true }
 tocat-plugin-tee = { path = "../plugins/tocat-plugin-tee", optional = true }
+tocat-plugin-throttle = {
+  path = "../plugins/tocat-plugin-throttle",
+  optional = true
+}
 
 [features]
-default = ["compress", "process", "rate", "tee"]
+default = ["compress", "limit", "process", "rate", "tee", "throttle"]
 compress = ["dep:tocat-plugin-compress"]
+limit = ["dep:tocat-plugin-limit"]
 process = ["dep:tocat-plugin-process"]
 rate = ["dep:tocat-plugin-rate"]
 tee = ["dep:tocat-plugin-tee"]
+throttle = ["dep:tocat-plugin-throttle"]

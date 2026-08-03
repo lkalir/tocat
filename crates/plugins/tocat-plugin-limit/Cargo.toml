@@ -1,0 +1,14 @@
+[package]
+name = "tocat-plugin-limit"
+version.workspace = true
+edition.workspace = true
+description = "tocat plugin that ends a transfer after a fixed number of bytes"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+tocat-api = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -70,6 +70,30 @@ pub trait EffectSink {
     /// `stage` is the emitting stage's display name, so the host can tag the
     /// line without every plugin having to repeat itself.
     fn log(&mut self, level: LogLevel, stage: &str, message: &str);
+
+    /// Wait `delay` before reading upstream again.
+    ///
+    /// The one effect that acts on the reader rather than on a side channel. A
+    /// stage cannot sleep: it is synchronous, it runs on the reading task, and
+    /// a guest has no runtime to sleep on. So it asks, and the host holds off
+    /// its next read. Several stages asking on one chunk get the longest of
+    /// the requests, not the sum.
+    ///
+    /// Defaults to doing nothing, so a host that has no reader to hold (a test
+    /// harness, an offline driver) is not obliged to honour it.
+    fn pace(&mut self, delay: Duration) {
+        let _ = delay;
+    }
+
+    /// Stop reading upstream, as if it had just reached end of stream.
+    ///
+    /// Everything already emitted is still written, `on_eof` still cascades,
+    /// and the path closes down its normal way. This is how a stage ends a
+    /// transfer deliberately, which is not a failure and must not be reported
+    /// as one.
+    fn halt(&mut self, stage: &str, reason: &str) {
+        let _ = (stage, reason);
+    }
 }
 
 /// Static description of the path a pipeline instance sits on.
@@ -251,6 +275,23 @@ impl<'a> Ctx<'a> {
 
     pub fn log(&mut self, level: LogLevel, message: &str) {
         self.sink.log(level, self.stage, message);
+    }
+
+    /// Ask the host to wait `delay` before reading upstream again.
+    ///
+    /// Applied after this call returns and after whatever was emitted has been
+    /// written, so the bytes in hand are never held hostage by the wait. On a
+    /// socket this is real backpressure: the read stops, the receive buffer
+    /// fills, the window closes and the peer slows down. Nothing is buffered
+    /// on this side.
+    pub fn pace(&mut self, delay: Duration) {
+        self.sink.pace(delay);
+    }
+
+    /// Ask the host to stop reading upstream, as if it had reached end of
+    /// stream. `reason` is logged against this stage.
+    pub fn halt(&mut self, reason: &str) {
+        self.sink.halt(self.stage, reason);
     }
 }
 

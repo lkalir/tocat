@@ -30,14 +30,14 @@
 
 use std::{sync::Arc, time::Instant};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use tocat_api::{Chain, ExternalStage, Pipeline, Segment};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::mpsc,
-    time::MissedTickBehavior,
+    time::{MissedTickBehavior, sleep},
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::{
     buffer::Buffer,
@@ -463,7 +463,8 @@ impl From<Downstream> for Dest {
 }
 
 impl Dest {
-    async fn send(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+    /// False when there is nowhere left to send. See [`Outlet::send`].
+    async fn send(&mut self, bytes: &[u8]) -> anyhow::Result<bool> {
         match self {
             Dest::Stream(writer) => {
                 if !bytes.is_empty() {
@@ -483,10 +484,10 @@ impl Dest {
                     socket.send(bytes).await?;
                 }
             }
-            Dest::Link(outlet) => outlet.send(bytes).await?,
+            Dest::Link(outlet) => return outlet.send(bytes).await,
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// End of stream: flush a writer, or close the channel so the segment
@@ -536,6 +537,11 @@ async fn run_pipeline(
                     chunk = input.next() => chunk?,
                     _ = ticker.tick() => {
                         drive_ticks(&mut pipeline, &mut output, &channels, &mut effects).await?;
+
+                        if !flow(&mut effects).await {
+                            break;
+                        }
+
                         continue;
                     }
                 }
@@ -555,10 +561,16 @@ async fn run_pipeline(
 
         // Nothing staged (no tee, or a chunk it swallowed): skip the join and
         // the apply future rather than polling one that would do nothing.
-        if effects.is_empty() {
-            output.send(bytes).await?;
+        let alive = if effects.is_empty() {
+            output.send(bytes).await?
         } else {
-            tokio::try_join!(output.send(bytes), channels.apply(&mut effects))?;
+            tokio::try_join!(output.send(bytes), channels.apply(&mut effects))?.0
+        };
+
+        // After the write, never before it: a stage that asked to stop or to
+        // slow down still gets the bytes it emitted delivered first.
+        if !alive || !flow(&mut effects).await {
+            break;
         }
     }
 
@@ -569,6 +581,32 @@ async fn run_pipeline(
     output.finish().await?;
 
     Ok(total)
+}
+
+/// Apply the effects that act on this pump rather than on a side channel.
+///
+/// Returns false when a stage asked to stop reading, which the caller treats
+/// exactly as upstream end of stream: emitted bytes are already out, `on_eof`
+/// still cascades, and the path closes down normally. Stopping this way is a
+/// decision, not a failure, so it is reported at info and the relay exits
+/// successfully.
+///
+/// A pace request is honoured by simply not reading for that long. That is the
+/// entire throttling mechanism: nothing is buffered here, and on a socket the
+/// stalled read closes the receive window and slows the peer down at source.
+async fn flow(effects: &mut Effects) -> bool {
+    if let Some(reason) = effects.take_halt() {
+        info!("{reason}");
+        return false;
+    }
+
+    let pace = effects.take_pace();
+
+    if !pace.is_zero() {
+        sleep(pace).await;
+    }
+
+    true
 }
 
 /// Hand a turn to every stage whose schedule came due, writing out whatever
@@ -628,9 +666,15 @@ fn link() -> (Outlet, Inlet) {
 impl Outlet {
     /// Crossing a segment boundary is the one place a copy is unavoidable: the
     /// downstream task outlives this stack frame, so it needs owned bytes.
-    async fn send(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+    ///
+    /// Returns false when the segment downstream has finished and there is
+    /// nobody left to send to. That is not a failure: a downstream that
+    /// stopped on purpose (a `limit` stage reaching its cap, a sink that
+    /// closed) is end of stream for this segment too, and a downstream that
+    /// stopped because it broke reports its own error from its own task.
+    async fn send(&mut self, bytes: &[u8]) -> anyhow::Result<bool> {
         if bytes.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
 
         let mut buf = self
@@ -642,10 +686,7 @@ impl Outlet {
         buf.clear();
         buf.extend_from_slice(bytes);
 
-        self.data
-            .send(buf)
-            .await
-            .map_err(|_| anyhow!("downstream segment stopped"))
+        Ok(self.data.send(buf).await.is_ok())
     }
 }
 

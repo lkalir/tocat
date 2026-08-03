@@ -1123,6 +1123,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tocat-plugin-limit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tocat-api",
+]
+
+[[package]]
 name = "tocat-plugin-process"
 version = "0.1.0"
 dependencies = [
@@ -1150,14 +1159,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tocat-plugin-throttle"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tocat-api",
+]
+
+[[package]]
 name = "tocat-plugins"
 version = "0.1.0"
 dependencies = [
  "tocat-api",
  "tocat-plugin-compress",
+ "tocat-plugin-limit",
  "tocat-plugin-process",
  "tocat-plugin-rate",
  "tocat-plugin-tee",
+ "tocat-plugin-throttle",
 ]
 
 [[package]]

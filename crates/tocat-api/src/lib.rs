@@ -40,6 +40,7 @@ pub mod forgiving;
 pub mod normalize;
 pub mod pipeline;
 pub mod plugin;
+pub mod size;
 
 use std::{fmt, str::FromStr};
 
@@ -56,6 +57,7 @@ pub use crate::{
         BuildCtx, Ctx, EffectSink, Emit, Execution, ExternalStage, LogLevel, PipelineMeta, Plugin,
         PluginFactory, Stage, StageInfo, StderrMode,
     },
+    size::{ByteSize, ParseSizeError},
 };
 
 /// One of the two byte paths through the relay.

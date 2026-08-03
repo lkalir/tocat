@@ -34,6 +34,12 @@ pub fn register_native(registry: &mut Registry) {
     #[cfg(feature = "rate")]
     registry.register(tocat_plugin_rate::RateFactory);
 
+    #[cfg(feature = "limit")]
+    registry.register(tocat_plugin_limit::LimitFactory);
+
+    #[cfg(feature = "throttle")]
+    registry.register(tocat_plugin_throttle::ThrottleFactory);
+
     #[cfg(feature = "compress")]
     {
         registry.register(tocat_plugin_compress::CompressFactory);

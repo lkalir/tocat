@@ -31,93 +31,11 @@ const CONFIG_NAMES: &[&str] = &["tocat.toml", ".tocat.toml"];
 
 /// Copy buffer size, in bytes.
 ///
-/// Accepts a plain byte count or a suffix: `65536`, `64k`, `1MiB`. Suffixes are
-/// binary — `k` is 1024, not 1000 — because the thing being sized is a buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ByteSize(pub usize);
+/// Defined in `tocat-api` so that the host and the plugins share one size
+/// grammar, and re-exported here because this is where the config lives.
+pub use tocat_api::ByteSize;
 
 pub const DEFAULT_BUFFER: ByteSize = ByteSize(256 * 1024);
-
-impl ByteSize {
-    #[must_use]
-    pub fn bytes(self) -> usize {
-        self.0
-    }
-}
-
-impl std::fmt::Display for ByteSize {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const UNITS: [(usize, &str); 3] = [
-            (1024 * 1024 * 1024, "GiB"),
-            (1024 * 1024, "MiB"),
-            (1024, "KiB"),
-        ];
-
-        for (scale, suffix) in UNITS {
-            if self.0 >= scale && self.0.is_multiple_of(scale) {
-                return write!(f, "{}{suffix}", self.0 / scale);
-            }
-        }
-
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::str::FromStr for ByteSize {
-    type Err = anyhow::Error;
-
-    fn from_str(raw: &str) -> anyhow::Result<Self> {
-        let trimmed = raw.trim();
-        let digits = trimmed
-            .trim_end_matches(|c: char| c.is_ascii_alphabetic())
-            .trim_end();
-        let suffix = trimmed[digits.len()..].trim().to_ascii_lowercase();
-
-        let scale: usize = match suffix.as_str() {
-            "" | "b" => 1,
-            "k" | "kb" | "kib" => 1024,
-            "m" | "mb" | "mib" => 1024 * 1024,
-            "g" | "gb" | "gib" => 1024 * 1024 * 1024,
-            other => bail!("unknown size suffix {other:?}; use k, m or g"),
-        };
-
-        let value: usize = digits
-            .parse()
-            .with_context(|| format!("{digits:?} is not a number"))?;
-
-        let bytes = value
-            .checked_mul(scale)
-            .with_context(|| format!("{raw} overflows a size"))?;
-
-        Ok(ByteSize(bytes))
-    }
-}
-
-impl Serialize for ByteSize {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for ByteSize {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error as _;
-
-        // Both `buffer-size = 262144` and `buffer-size = "256KiB"` are natural
-        // things to write, so accept either.
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Bytes(usize),
-            Text(String),
-        }
-
-        match Raw::deserialize(deserializer)? {
-            Raw::Bytes(n) => n.to_string().parse().map_err(D::Error::custom),
-            Raw::Text(s) => s.parse().map_err(D::Error::custom),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct Settings {

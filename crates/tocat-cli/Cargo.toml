@@ -44,11 +44,13 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [features]
 default = ["all-plugins"]
-all-plugins = ["compress", "process", "rate", "tee"]
+all-plugins = ["compress", "limit", "process", "rate", "tee", "throttle"]
 compress = ["tocat-plugins/compress"]
+limit = ["tocat-plugins/limit"]
 process = ["tocat-plugins/process"]
 rate = ["tocat-plugins/rate"]
 tee = ["tocat-plugins/tee"]
+throttle = ["tocat-plugins/throttle"]
 tokio-console = ["dep:console-subscriber"]
 
 [lints.rust]

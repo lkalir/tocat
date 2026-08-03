@@ -78,6 +78,12 @@
           "$ref": "#/$defs/plugin-rate"
         },
         {
+          "$ref": "#/$defs/plugin-limit"
+        },
+        {
+          "$ref": "#/$defs/plugin-throttle"
+        },
+        {
           "$ref": "#/$defs/plugin-other"
         }
       ]
@@ -1052,6 +1058,109 @@
         "detach": {
           "type": "boolean",
           "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        }
+      }
+    },
+    "plugin-limit": {
+      "title": "limit",
+      "type": "object",
+      "description": "End the transfer after a fixed number of bytes. Reaching the limit stops the read the way upstream end of stream would: emitted bytes are written, the remaining stages are finished and flushed, and tocat exits successfully. `at-limit` decides what happens to the one chunk that straddles the limit.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "bytes"
+      ],
+      "properties": {
+        "name": {
+          "const": "limit",
+          "description": "Selects the limit plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "bytes": {
+          "description": "How many bytes to let past before ending the stream. A plain byte count or a binary suffix ('64k', '1MiB'). Counted at this stage's own position, and per direction: with direction 'both' each path gets its own budget.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        },
+        "at-limit": {
+          "type": "string",
+          "default": "exact",
+          "description": "What to do with the one chunk that crosses the limit. 'drop' discards it whole, so at most `bytes` are passed on. 'exact' splits it, so exactly `bytes` are passed on. 'overshoot' forwards it whole, so at least `bytes` are passed on and no message is cut in half. Splitting is the only mode that is unsafe on a datagram path.",
+          "enum": [
+            "drop",
+            "exact",
+            "overshoot"
+          ]
+        }
+      }
+    },
+    "plugin-throttle": {
+      "title": "throttle",
+      "type": "object",
+      "description": "Hold this path to a bandwidth ceiling. Nothing is buffered: chunks pass through untouched and the relay waits before reading again, so a slow reader closes the receive window and the sender slows at source. The wait lands between reads, so pacing is smooth only when the buffer size is at or below the per-second rate.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "rate"
+      ],
+      "properties": {
+        "name": {
+          "const": "throttle",
+          "description": "Selects the throttle plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "rate": {
+          "description": "The ceiling, in bytes per second. A plain byte count or a binary suffix ('64k', '1MiB'). Applied per direction: with direction 'both' each path gets its own ceiling.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        },
+        "burst": {
+          "description": "How much unused allowance may accumulate, so a path that has been idle can resume at full speed briefly rather than from nothing. Defaults to one second of `rate`.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
         }
       }
     }

@@ -38,13 +38,13 @@ The plugins that ship with tocat are
 - [ ] encrypt / decrypt - symmetric stream encryption/decryption
 - [ ] frame / unframe - apply or strip framing to and from streams
 - [ ] hash - digest stream contents
-- [ ] limit - terminate stream after N bytes
+- [x] limit - terminate stream after N bytes
 - [ ] pcap - save stream as pcap
 - [x] process - delegate to subprocess using stdin/stdout
 - [x] rate - measure and report throughput
 - [ ] redact - remove sensitive information from streams
 - [x] tee - mirror a path's bytes to a file or stderr, verbatim or as a hex dump
-- [ ] throttle - artificially constrict bandwidth
+- [x] throttle - artificially constrict bandwidth
 - [ ] WASM plugin support
 
 Many configurations and options present in socat are also currently missing.
@@ -71,65 +71,29 @@ $ cargo install --path crates/tocat-cli --no-default-features
 ## Usage
 
 ```
-$ tocat --help
+$ tocat -h
 socat-inspired relay
 
 Usage: tocat [OPTIONS] [SPEC]...
 
 Arguments:
-  [SPEC]...
-          SOURCE [PLUGIN ...] SINK. The outer specs are endpoints; anything between them is a pipeline entry. Slots already filled by --from/--to are skipped.
+  [SPEC]...  SOURCE [PLUGIN ...] SINK. The outer specs are endpoints; anything between them is a pipeline entry. Slots already filled by --from/--to are skipped.
 
 Options:
-  -c, --config <PATH>
-          Configuration file to use.
-
-      --no-config
-          Disable configuration file merging.
-
-      --dump-config
-          Render the final configuration as TOML.
-
-  -b, --buffer-size <SIZE>
-          Bytes per copy, e.g. 65536 or 256KiB. One buffer per direction per connection.
-
-  -f, --from <ADDR>
-          Source endpoint. Fills the first positional slot.
-
-  -t, --to <ADDR>
-          Sink endpoint. Fills the last positional slot.
-
-  -p, --plugin <SPEC>
-          Pipeline entry: NAME[:DIRECTION][,key=value...]. Repeatable, applied in order.
-
-      --no-plugins
-          Ignore plugins declared in the configuration file.
-
-      --list-plugins
-          List the plugins compiled into this binary and exit.
-
-  -P, --progress[=<WHEN>]
-          Draw a progress line on stderr. Bare, or 'auto', draws only when stderr is a terminal; 'always' draws regardless.
-
-          Possible values:
-          - never
-          - auto:   Draw only when stderr is a terminal
-          - always: Draw regardless, as `pv --force` does
-
-  -v, --verbose...
-          Simple verbosity level.
-
-      --log-level <LEVEL>
-          Explicit verbosity level.
-          
-          [possible values: off, error, warn, info, debug, trace]
-
-  -h, --help
-          Print help (see a summary with '-h')
-
-  -V, --version
-          Print version
-
+  -c, --config <PATH>       Configuration file to use.
+      --no-config           Disable configuration file merging.
+      --dump-config         Render the final configuration as TOML.
+  -b, --buffer-size <SIZE>  Bytes per copy, e.g. 65536 or 256KiB. One buffer per direction per connection.
+  -f, --from <ADDR>         Source endpoint. Fills the first positional slot.
+  -t, --to <ADDR>           Sink endpoint. Fills the last positional slot.
+  -p, --plugin <SPEC>       Pipeline entry: NAME[:DIRECTION][,key=value...]. Repeatable, applied in order.
+      --no-plugins          Ignore plugins declared in the configuration file.
+      --list-plugins        List the plugins compiled into this binary and exit.
+  -P, --progress[=<WHEN>]   Draw a progress line on stderr. Bare, or 'auto', draws only when stderr is a terminal; 'always' draws regardless. [possible values: never, auto, always]
+  -v, --verbose...          Simple verbosity level.
+      --log-level <LEVEL>   Explicit verbosity level. [possible values: off, error, warn, info, debug, trace]
+  -h, --help                Print help (see more with '--help')
+  -V, --version             Print version
 ```
 
 tocat can be used similarly to socat with the source and sink endpoints specified via strings, you can also use the explicit `--from` and `--to` flags
@@ -470,6 +434,65 @@ zeroes included. A datagram source never reaches end of stream, so it never prin
 
 Ticking costs one timer per direction per connection for any pipeline containing a ticking stage, which multiplies under `fork`. `interval=0` is how
 you opt out of it and keep only the summary.
+
+### `limit` - end the transfer after N bytes
+
+Counts bytes past its own position and, on reaching the limit, stops the read.
+
+```console
+$ tocat tcp:host:9000 limit,bytes=10MiB file:sample.bin
+$ tocat -f tcp-listen:9000,fork -t tcp:backend:8080 -p 'limit,bytes=1M,direction=source'
+```
+
+| Option           | Description                                                                                                   |
+|------------------|---------------------------------------------------------------------------------------------------------------|
+| `bytes=SIZE`     | How many bytes to let past. Required. Takes the usual size suffixes, so `1M` is 1 MiB. Aliases: `max`, `size` |
+| `at-limit=MODE`  | What to do with the chunk that crosses the limit: `drop`, `exact` (the default) or `overshoot`                |
+
+Reaching the limit is upstream end of stream arriving early, not an error: bytes already emitted are written, the stages below get their end of stream,
+sinks are flushed and closed, and tocat exits successfully.
+
+The default `direction=both` builds one instance per path, each with its own budget, so `bytes=1MiB` means a megabyte in each direction rather than a
+megabyte between them. Position matters too: before a `compress` stage it caps the payload, after it caps the wire.
+
+Exactly one chunk straddles the limit, and there are three things to do with it.
+
+| `at-limit`  | The crossing chunk | Guarantee        |
+|-------------|--------------------|------------------|
+| `drop`      | discarded whole    | at most `bytes`  |
+| `exact`     | split at the limit | exactly `bytes`  |
+| `overshoot` | forwarded whole    | at least `bytes` |
+
+`exact` is the default and is what a byte count usually means. `drop` is the hard ceiling: never put more than this many bytes into that file, that pipe,
+that quota. `overshoot` is the one to reach for on a datagram path, where a limit landing mid-message leaves a real choice: dropping throws away a
+message already received on a transfer that is ending anyway, while overshooting delivers it whole and then stops.
+
+Splitting is also the only thing here that is unsafe on a datagram path, so `drop` and `overshoot` are both safe and `exact` is not. Half a datagram is
+a corrupt message rather than a short read.
+
+### `throttle` - constrict bandwidth
+
+Holds the path to a ceiling by slowing the reader down.
+
+```console
+$ tocat file:big.iso throttle,rate=256k tcp:host:9000
+$ tocat -f tcp-listen:9000,fork -t tcp:backend:8080 -p 'throttle,rate=1MiB,burst=4MiB'
+```
+
+| Option        | Description                                                                                                                  |
+|---------------|------------------------------------------------------------------------------------------------------------------------------|
+| `rate=SIZE`   | The ceiling, in bytes per second. Required. Aliases: `bandwidth`, `bps`                                                      |
+| `burst=SIZE`  | How much unused allowance may accumulate, so an idle path can resume at full speed briefly. Defaults to one second of `rate` |
+
+Nothing is buffered. Every chunk passes through untouched and the stage asks the relay to wait before reading again, so there is no queue to grow when
+the source outruns the limit. It also throttles the right end: a read that does not happen leaves the receive buffer full, which closes the TCP window
+and slows the sender at source.
+
+The wait lands between reads, so the stall comes in units of chunks. At the 256 KiB default buffer, `rate=64k` is four seconds of silence followed by
+256 KiB at once. The average is right either way, but for smooth pacing give the relay a buffer at or below the per-second rate (`-b 64k` here).
+
+As with `limit`, instances are per path, so `rate=1MiB` is a megabyte per second each way rather than between them. Datagrams are safe: a message goes
+out as the message it arrived as, just later.
 
 ### Writing a plugin
 

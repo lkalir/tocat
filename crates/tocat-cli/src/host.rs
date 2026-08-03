@@ -9,7 +9,7 @@
 //! `extend_from_slice` — no allocation and no lock inside the plugin call, and
 //! the flush overlaps the downstream write.
 
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, bail};
 use tocat_api::{
@@ -91,6 +91,12 @@ pub struct Effects {
     dirty: Vec<usize>,
     logs: Vec<(PluginLogLevel, String, String)>,
     unknown: Option<ChannelId>,
+    /// Longest pause any stage asked for, applied by the pump before its next
+    /// read.
+    pace: Duration,
+    /// Set by the first stage to ask for the read to stop, already tagged with
+    /// the stage that asked.
+    halt: Option<String>,
 }
 
 impl Effects {
@@ -101,7 +107,19 @@ impl Effects {
             dirty: Vec::new(),
             logs: Vec::new(),
             unknown: None,
+            pace: Duration::ZERO,
+            halt: None,
         }
+    }
+
+    /// How long the pump should wait before reading again, and clear it.
+    pub fn take_pace(&mut self) -> Duration {
+        std::mem::replace(&mut self.pace, Duration::ZERO)
+    }
+
+    /// Why the pump should stop reading, if a stage said so, and clear it.
+    pub fn take_halt(&mut self) -> Option<String> {
+        self.halt.take()
     }
 
     /// Nothing staged during the last plugin call.
@@ -134,6 +152,20 @@ impl EffectSink for Effects {
     fn log(&mut self, level: PluginLogLevel, stage: &str, message: &str) {
         self.logs
             .push((level, stage.to_string(), message.to_string()));
+    }
+
+    /// The longest request wins rather than the sum: two stages each asking to
+    /// be read from no faster than once a second are satisfied by one second,
+    /// not two.
+    fn pace(&mut self, delay: Duration) {
+        self.pace = self.pace.max(delay);
+    }
+
+    /// First one wins, which is the stage nearest upstream, since stages are
+    /// called in path order.
+    fn halt(&mut self, stage: &str, reason: &str) {
+        self.halt
+            .get_or_insert_with(|| format!("{stage}: {reason}"));
     }
 }
 
