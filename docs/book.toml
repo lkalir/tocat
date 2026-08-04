@@ -1,0 +1,20 @@
+[book]
+title = "tocat"
+description = "User guide, plugin API, and design notes for tocat, a socat-inspired relay built on tokio"
+src = "src"
+language = "en"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true

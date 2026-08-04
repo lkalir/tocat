@@ -44,7 +44,16 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [features]
 default = ["all-plugins"]
-all-plugins = ["compress", "limit", "process", "rate", "tee", "throttle"]
+all-plugins = [
+  "block",
+  "compress",
+  "limit",
+  "process",
+  "rate",
+  "tee",
+  "throttle"
+]
+block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
 limit = ["tocat-plugins/limit"]
 process = ["tocat-plugins/process"]

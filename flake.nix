@@ -98,6 +98,7 @@
             cargo-audit
             cargo-deny
             bacon
+            mdbook
 
             # async runtime introspection
             tokio-console
