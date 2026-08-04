@@ -1,4 +1,4 @@
-//! `tee` — mirror a path's bytes to a side channel, verbatim or as a hex dump.
+//! `tee`: mirror a path's bytes to a side channel, verbatim or as a hex dump.
 //!
 //! ```toml
 //! [[plugin]]
@@ -190,7 +190,7 @@ impl PluginFactory for TeeFactory {
         let channel = ctx.open_channel(config.target()?)?;
         // Two questions a dump has to answer: which stream, and which tap.
         // The stream comes from the endpoints (with the peer already folded in
-        // under fork), the tap from this stage's name — which the user can set
+        // under fork), the tap from this stage's name, which the user can set
         // with `as`. Neighbouring stage names are static structure and belong
         // in the startup log, not on every entry.
         let label = config.label.clone().unwrap_or_else(|| {
@@ -255,7 +255,7 @@ pub fn hex_dump(buf: &[u8], start_offset: u64, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tocat_api::{Direction, EffectSink, Emit, LogLevel, PipelineMeta, StageInfo};
+    use tocat_api::{Direction, EffectSink, Emission, Emit, LogLevel, PipelineMeta, StageInfo};
 
     use super::*;
 
@@ -311,15 +311,18 @@ mod tests {
 
     fn feed(plugin: &mut dyn Plugin, sink: &mut Recorder, input: &[u8]) -> Emit {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
         {
-            let mut ctx = Ctx::new(&meta, NAME, input, &mut out, &mut emit, sink);
+            let mut ctx = Ctx::new(&meta, NAME, input, &mut emission, sink);
             plugin.on_bytes(&mut ctx, input).unwrap();
         }
 
-        assert!(out.is_empty(), "tee must never materialise the payload");
-        emit
+        assert!(
+            emission.bytes().is_empty(),
+            "tee must never materialise the payload",
+        );
+
+        emission.emit()
     }
 
     #[test]

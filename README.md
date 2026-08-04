@@ -34,6 +34,7 @@ tocat is in early days and has a long way to go before reaching parity with soca
 The plugins that ship with tocat are
 
 - [ ] base64/unbase64 - encoding using base64
+- [x] block - accumulate and emit data in fixed sizes
 - [x] compress / decompress - zstd
 - [ ] encrypt / decrypt - symmetric stream encryption/decryption
 - [ ] frame / unframe - apply or strip framing to and from streams
@@ -288,7 +289,7 @@ An entry applies to one path or both. Omitting the direction means both.
 | `sink-to-source` | `reverse`, `sink-to-src`, `in`   | Bytes read from the sink             |
 | `both`           | `bidi`, `duplex`, `all`          | Both paths, as two separate instances|
 
-`both` builds two independent instances, one per path, so per-direction state — byte offsets, codec state — never leaks across paths.
+`both` builds two independent instances, one per path, so per-direction state (byte offsets, codec state) never leaks across paths.
 
 The command line is a picture of the wire, read left to right, and the reverse path reads it right to left:
 
@@ -300,7 +301,7 @@ sink -> source:   SRC <- a <- b <- c <- SINK
 ```
 
 So a stage written earlier sits nearer the source, and bytes coming back from the sink reach the later stages first. Write the stages in the order the
-forward path would see them, and the reverse path nests correctly — which is what you want for anything that wraps the payload.
+forward path would see them, and the reverse path nests correctly, which is what you want for anything that wraps the payload.
 
 The `source`/`sink` aliases are accepted but read badly: `tee:sink` means sink-to-source, not "tee at the sink". Prefer `forward` and `reverse`.
 
@@ -308,10 +309,10 @@ The `source`/`sink` aliases are accepted but read badly: `tee:sink` means sink-t
 
 Two options are handled by tocat rather than the plugin, and work on any entry.
 
-| Option      | Description                                                                                                                    |
-|-------------|--------------------------------------------------------------------------------------------------------------------------------|
+| Option      | Description                                                                                                                         |
+|-------------|-------------------------------------------------------------------------------------------------------------------------------------|
 | `as=NAME`   | Name this instance. Appears in logs and in `tee` headers. Without it a stage is named after its plugin, with `#1`, `#2` for repeats |
-| `detach`    | Run this stage on its own task. Costs a copy and a wakeup per chunk, so it is only worth it for stages that are expensive per byte |
+| `detach`    | Run this stage on its own task. Costs a copy and a wakeup per chunk, so it is only worth it for stages that are expensive per byte  |
 
 `process` always runs on its own task, so `detach = false` on one is rejected rather than ignored.
 
@@ -324,7 +325,8 @@ A stage that holds bytes across calls, or emits two messages' worth from one, wi
 nonsense.
 
 tocat warns when a stage that may not preserve boundaries sits on a path whose *destination* is a datagram endpoint, naming the stage, and relays
-anyway. 
+anyway. That is a warning rather than a refusal because rewriting the message stream is sometimes the point: `block,size=1400` on a UDP path emits one
+datagram per block, which is a reasonable thing to ask for and still not a preservation of what the peer sent.
 
 Sending datagrams *into* a stream sink is unremarkable and draws no warning. So `udp-listen:9000 compress:forward tcp:collector:9000` is fine,
 while `udp-listen:9000 compress udp:peer:9000` will warn.
@@ -494,6 +496,38 @@ The wait lands between reads, so the stall comes in units of chunks. At the 256 
 As with `limit`, instances are per path, so `rate=1MiB` is a megabyte per second each way rather than between them. Datagrams are safe: a message goes
 out as the message it arrived as, just later.
 
+### `block` - cut the stream into fixed-size records
+
+Holds bytes back until it has a full block, then emits it as one unit.
+
+```console
+$ tocat file:stream.bin block,size=512,pad file:/dev/st0
+$ tocat -f tcp-listen:9000,fork -t udp:collector:9999 -p 'block,size=1400,flush=250ms'
+```
+
+| Option        | Description                                                                                                           |
+|---------------|-----------------------------------------------------------------------------------------------------------------------|
+| `size=SIZE`   | Bytes to accumulate before emitting. Takes the usual size suffixes, so `64k` is 64 KiB. Defaults to 4096              |
+| `flush=TIME`  | How long a partial block may wait. Absent it waits until end of stream; `0` emits on every write. Takes `500ms`, `2m` |
+| `pad`         | Pad a short block out to `size` with zero bytes                                                                       |
+
+This is `dd`'s `obs`, with the difference that a block is a *unit* rather than merely an amount: each one is delivered on its own rather than being
+concatenated with its neighbours. On a byte sink that only changes where the writes fall, which is what a tape drive, a raw device or anything opened
+`O_DIRECT` cares about. On a datagram sink each block becomes one message, and across a `detach` boundary each block becomes one call to the segment
+below.
+
+A full block never waits: it goes out the moment it fills. `flush` bounds the short one, and the bound is real rather than approximate, because the
+stage restarts its own timer when a block starts filling. The interval is therefore measured from the first byte held, not from wherever a shared
+cadence happened to be, so `flush=250ms` means a byte waits at most 250ms and not "until the next quarter-second boundary that comes round".
+
+`pad` only ever affects a short block, which in practice means the last one and any cut short by `flush`. A full block is already `size` bytes.
+
+Framing costs something, so reach for this only when the splits are the point. Every stage below a `block` is called once per block rather than once
+per chunk, so `size=512` against a 256 KiB buffer runs the rest of the pipeline 512 times per read. `detach` on a stage below one is worse still, since
+each block then costs its own task wakeup.
+
+Not safe on a datagram path: this stage holds bytes across calls and the boundaries it emits are its own rather than the ones the peer sent.
+
 ### Writing a plugin
 
 Plugins implement the `Plugin` trait from the `tocat-api` crate. A plugin is a synchronous byte transformer: it is handed a chunk and decides what to
@@ -509,6 +543,16 @@ A stage that needs time rather than traffic to drive it implements `tick_interva
 wants calling, and then calls it on that schedule for as long as the pipeline lives (whether or not bytes are moving), which is what a keepalive needs.
 Anything emitted from a tick continues downstream through the stages below it, the same way end-of-stream output cascades. The host owns the timer
 because a guest cannot reach a clock, and a segment with nothing ticking builds no timer at all.
+
+Because the host owns the clock, the schedule a stage gets is a cadence rather than a delay: a tick that came due while bytes were flowing fires at the
+next opportunity, which may be immediately after the bytes it is about arrived. A stage that means "an interval after I started waiting" says so with
+`ctx.rearm()`, which restarts its own schedule from now. That is how `block` turns its `flush` option into a latency bound it can actually promise.
+
+Whatever a stage emits in one call is delivered as one unit, however many times it forwards. A stage that needs the pieces kept apart calls
+`ctx.boundary()` between them, and each unit then becomes one write at a byte sink, one message at a datagram sink, one parcel across a `detach`
+boundary, and one `on_bytes` call at every stage below. Unit counts multiply down a chain, which is why this is an explicit request rather than
+something inferred from a stage emitting more than once. Passing through stays free underneath one: a stage that hands every unit back untouched copies
+nothing, exactly as it would on an unframed chunk.
 
 ## Buffers
 
@@ -636,7 +680,7 @@ path = "tocat.schema.json"
 include = ["tocat.toml", ".tocat.toml"]
 ```
 
-The schema describes the plugins that ship with tocat, and accepts entries for ones it does not know about — which is necessary, since the plugin set
+The schema describes the plugins that ship with tocat, and accepts entries for ones it does not know about, which is necessary, since the plugin set
 depends on the features the binary was built with. tocat itself is the real validator and rejects unknown options at startup.
 
 ### Logging

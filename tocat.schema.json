@@ -84,6 +84,9 @@
           "$ref": "#/$defs/plugin-throttle"
         },
         {
+          "$ref": "#/$defs/plugin-block"
+        },
+        {
           "$ref": "#/$defs/plugin-other"
         }
       ]
@@ -415,7 +418,7 @@
     "udp-listen-endpoint": {
       "title": "udp-listen",
       "type": "object",
-      "description": "Receive datagrams. The first sender becomes the peer for the rest of the run and everyone else is ignored — there is no per-sender demultiplexing, so `fork` does not apply here yet.",
+      "description": "Receive datagrams. The first sender becomes the peer for the rest of the run and everyone else is ignored: there is no per-sender demultiplexing, so `fork` does not apply here yet.",
       "additionalProperties": false,
       "required": [
         "type"
@@ -639,10 +642,10 @@
         "hold": {
           "type": "boolean",
           "default": true,
-          "description": "Keep the FIFO open across producers. tocat opens read-write, so it is its own writer: opening never blocks and the stream never ends, which is what you want for a log or event pipe whose producers come and go. Without it a source blocks until a writer appears and sees EOF when the last one leaves — one producer, then done."
+          "description": "Keep the FIFO open across producers. tocat opens read-write, so it is its own writer: opening never blocks and the stream never ends, which is what you want for a log or event pipe whose producers come and go. Without it a source blocks until a writer appears and sees EOF when the last one leaves, so one producer, then done."
         },
         "size": {
-          "description": "Kernel FIFO capacity. Linux only, best-effort: rounded up to a power of two, and capped by /proc/sys/fs/pipe-max-size for unprivileged processes. Unrelated to `buffer-size` — this one decides when the *producer* blocks. Left at the kernel default (64 KiB) when absent, because a named FIFO is shared with whoever else has it open.",
+          "description": "Kernel FIFO capacity. Linux only, best-effort: rounded up to a power of two, and capped by /proc/sys/fs/pipe-max-size for unprivileged processes. Unrelated to `buffer-size`, which decides when the *producer* blocks. Left at the kernel default (64 KiB) when absent, because a named FIFO is shared with whoever else has it open.",
           "oneOf": [
             {
               "type": "integer",
@@ -878,7 +881,7 @@
     "plugin-process": {
       "title": "process",
       "type": "object",
-      "description": "Pipe this path through a subprocess: the relay's bytes on its stdin, its stdout continuing downstream. Give one of `argv` or `command`. The most expensive stage available — two pipe crossings per chunk, and one child per connection per direction — so prefer a compiled plugin for anything hot.",
+      "description": "Pipe this path through a subprocess: the relay's bytes on its stdin, its stdout continuing downstream. Give one of `argv` or `command`. The most expensive stage available (two pipe crossings per chunk, and one child per connection per direction) so prefer a compiled plugin for anything hot.",
       "additionalProperties": false,
       "required": [
         "name"
@@ -925,7 +928,7 @@
         },
         "command": {
           "type": "string",
-          "description": "A shell command line, as the `system:` endpoint. Runs with tocat's privileges — do not build one from untrusted input, or accept one from a config file others can write. Alternative to `argv`.",
+          "description": "A shell command line, as the `system:` endpoint. Runs with tocat's privileges, so do not build one from untrusted input, or accept one from a config file others can write. Alternative to `argv`.",
           "examples": [
             "gzip -c",
             "grep -v DEBUG | sort -u"
@@ -1058,6 +1061,64 @@
         "detach": {
           "type": "boolean",
           "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        }
+      }
+    },
+    "plugin-block": {
+      "title": "block",
+      "type": "object",
+      "description": "Accumulate the path into fixed-size blocks. Each block is emitted as one unit, so it is delivered on its own rather than concatenated with its neighbours: on a byte sink that decides where the writes fall, on a datagram sink each block is one message, and across a detached boundary each block is one call to the segment below. This is `dd`'s `obs`, and it is what a tape drive, a raw device or an O_DIRECT file wants. Framing is not free: every stage below is called once per block rather than once per chunk, so a small size against a large buffer runs the rest of the pipeline many times per read.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "block",
+          "description": "Selects the block plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "size": {
+          "description": "Bytes to accumulate before emitting. A plain byte count or a binary suffix ('512', '64k', '1MiB'). Must be greater than zero. A full block never waits for `flush`: it goes out as soon as it fills.",
+          "default": 4096,
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        },
+        "flush": {
+          "description": "How long a partial block may wait: a number of seconds, or a string with a suffix ('250ms', '2s', '1m'). Absent, a short block is held until end of stream, which is what a device wants and an interactive stream does not. 0 emits whatever is in hand on every write, which caps latency at the cost of short blocks. The bound is measured from the first byte held, because the stage restarts its own timer when a block starts filling. Note that a ticking stage costs one timer per direction per connection, which multiplies under fork.",
+          "oneOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *(ns|us|ms|s|m|h|d|w)? *$"
+            }
+          ]
+        },
+        "pad": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pad a short block out to `size` with zero bytes. Only short blocks are affected, which in practice means the block at end of stream and any cut short by `flush`; a full block is already `size` bytes."
         }
       }
     },

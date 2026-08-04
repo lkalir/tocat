@@ -1113,6 +1113,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tocat-plugin-block"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tocat-api",
+]
+
+[[package]]
 name = "tocat-plugin-compress"
 version = "0.1.0"
 dependencies = [
@@ -1172,6 +1181,7 @@ name = "tocat-plugins"
 version = "0.1.0"
 dependencies = [
  "tocat-api",
+ "tocat-plugin-block",
  "tocat-plugin-compress",
  "tocat-plugin-limit",
  "tocat-plugin-process",

@@ -1,4 +1,4 @@
-//! cli.rs — argument surface.
+//! cli.rs: argument surface.
 //!
 //! Endpoints and plugins are written with the same `name:body,key=value`
 //! grammar, so roles come from **position**, never from inspecting the text:

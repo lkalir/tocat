@@ -37,6 +37,7 @@
 pub mod channel;
 pub mod error;
 pub mod forgiving;
+pub mod interval;
 pub mod normalize;
 pub mod pipeline;
 pub mod plugin;
@@ -51,11 +52,12 @@ pub use crate::{
     channel::{ChannelId, ChannelTarget, HostBuilder},
     error::{PluginError, Result},
     forgiving::Forgiving,
+    interval::{Interval, ParseIntervalError},
     normalize::{canonical, normalize},
-    pipeline::{Chain, Pipeline, Registry, Segment},
+    pipeline::{Chain, Emitted, Pipeline, Registry, Segment},
     plugin::{
-        BuildCtx, Ctx, EffectSink, Emit, Execution, ExternalStage, LogLevel, PipelineMeta, Plugin,
-        PluginFactory, Stage, StageInfo, StderrMode,
+        BuildCtx, Ctx, EffectSink, Emission, Emit, Execution, ExternalStage, LogLevel,
+        PipelineMeta, Plugin, PluginFactory, Stage, StageInfo, StderrMode,
     },
     size::{ByteSize, ParseSizeError},
 };
@@ -100,7 +102,7 @@ impl fmt::Display for Direction {
 
 /// Which path(s) a declared plugin applies to.
 ///
-/// [`DirectionSpec::Both`] instantiates the plugin twice — once per direction —
+/// [`DirectionSpec::Both`] instantiates the plugin twice, once per direction,
 /// rather than sharing one instance between them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]

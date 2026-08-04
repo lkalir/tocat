@@ -1,4 +1,4 @@
-//! child.rs — spawning subprocesses.
+//! child.rs: spawning subprocesses.
 //!
 //! Shared by the `exec:`/`system:` endpoints and the `process` plugin, which
 //! want the same child with different stderr handling.

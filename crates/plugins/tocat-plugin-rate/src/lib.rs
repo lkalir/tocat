@@ -564,7 +564,8 @@ mod tests {
 
     use serde_json::json;
     use tocat_api::{
-        Direction, EffectSink, Emit, HostBuilder, PipelineMeta, Result as PluginResult, StageInfo,
+        Direction, EffectSink, Emission, Emit, HostBuilder, PipelineMeta, Result as PluginResult,
+        StageInfo,
     };
 
     use super::*;
@@ -618,22 +619,24 @@ mod tests {
 
     fn feed(plugin: &mut dyn Plugin, sink: &mut Recorder, input: &[u8]) -> Emit {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
         {
-            let mut ctx = Ctx::new(&meta, NAME, input, &mut out, &mut emit, sink);
+            let mut ctx = Ctx::new(&meta, NAME, input, &mut emission, sink);
             plugin.on_bytes(&mut ctx, input).expect("on_bytes");
         }
 
-        assert!(out.is_empty(), "rate must never materialise the payload");
-        emit
+        assert!(
+            emission.bytes().is_empty(),
+            "rate must never materialise the payload",
+        );
+
+        emission.emit()
     }
 
     fn finish(plugin: &mut dyn Plugin, sink: &mut Recorder) {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
-        let mut ctx = Ctx::new(&meta, NAME, &[], &mut out, &mut emit, sink);
+        let mut emission = Emission::new();
+        let mut ctx = Ctx::new(&meta, NAME, &[], &mut emission, sink);
         plugin.on_eof(&mut ctx).expect("on_eof");
     }
 
@@ -642,14 +645,16 @@ mod tests {
     /// whether it was due.
     fn tick(plugin: &mut dyn Plugin, sink: &mut Recorder) {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
         {
-            let mut ctx = Ctx::new(&meta, NAME, &[], &mut out, &mut emit, sink);
+            let mut ctx = Ctx::new(&meta, NAME, &[], &mut emission, sink);
             plugin.on_tick(&mut ctx).expect("on_tick");
         }
 
-        assert!(out.is_empty(), "rate is an observer and emits nothing");
+        assert!(
+            emission.bytes().is_empty(),
+            "rate is an observer and emits nothing",
+        );
     }
 
     #[test]

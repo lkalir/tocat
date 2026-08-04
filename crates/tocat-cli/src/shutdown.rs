@@ -1,4 +1,4 @@
-//! shutdown.rs — draining on signal.
+//! shutdown.rs: draining on signal.
 //!
 //! The first SIGINT/SIGTERM asks the relay to stop accepting and drain what is
 //! in flight; a second one exits immediately. Async paths observe this by

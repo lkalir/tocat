@@ -1,4 +1,4 @@
-//! host.rs — the host half of the plugin API.
+//! host.rs: the host half of the plugin API.
 //!
 //! Plugins are synchronous and never touch the filesystem: they ask for a
 //! channel at build time and stage bytes against it at run time.
@@ -6,8 +6,8 @@
 //! [`Channels`] owns the writers and flushes them on the relay's runtime.
 //!
 //! Staging is per-channel and reused across chunks, so a side write costs one
-//! `extend_from_slice` — no allocation and no lock inside the plugin call, and
-//! the flush overlaps the downstream write.
+//! `extend_from_slice`, so no allocation and no lock inside the plugin call,
+//! and the flush overlaps the downstream write.
 
 use std::{path::Path, sync::Arc, time::Duration};
 

@@ -27,11 +27,23 @@
 //! Reads win the race (due to `biased`) because payload should not wait behind
 //! bookkeeping. A pipeline with nothing ticking builds no timer and awaits the
 //! read directly, exactly as before.
+//!
+//! # Framing
+//!
+//! A segment emits one unit per chunk unless a stage in it asked otherwise
+//! (see [`tocat_api::Ctx::boundary`]). Where units are sent one at a time they
+//! cost something, so each destination pays only where the split is
+//! observable: a byte stream takes the whole emission in one write, because a
+//! peer cannot tell the difference and one syscall is cheaper than several,
+//! while a datagram sink sends one message per unit and a detached boundary
+//! sends one parcel per unit. That last one is the expensive case: a stage
+//! cutting a chunk into many small units turns one task hop into one per unit,
+//! which is a reason not to detach a stage sitting under one.
 
 use std::{sync::Arc, time::Instant};
 
 use anyhow::{Context, bail};
-use tocat_api::{Chain, ExternalStage, Pipeline, Segment};
+use tocat_api::{Chain, Emitted, ExternalStage, Pipeline, Segment};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::mpsc,
@@ -69,8 +81,8 @@ pub async fn pump(
 
     match segments.len() {
         // Datagrams cannot take the byte-stream shortcut: `copy_buf` is free to coalesce reads,
-        // which would merge two messages into one sned. An empty pipeline preserves the
-        // on-in-one-out mapping instead
+        // which would merge two messages into one send. An empty pipeline preserves the
+        // one-in-one-out mapping instead
         0 if matches!(reader, ReadHalf::Stream(_)) && matches!(writer, WriteHalf::Stream(_)) => {
             copy_direct(reader, writer, buffer).await
         }
@@ -101,7 +113,7 @@ pub async fn pump(
 /// Where a segment reads from: the endpoint, or the segment before it.
 ///
 /// Concrete rather than generic. Only the head and tail ever hold a stream, so
-/// a type parameter would be a phantom on every other segment — and one the
+/// a type parameter would be a phantom on every other segment, and one the
 /// compiler could not infer at the call site.
 enum Upstream {
     Stream(ReadHalf),
@@ -447,7 +459,9 @@ impl Source {
 /// Where a segment's bytes go.
 enum Dest {
     Stream(BoxWrite),
-    /// Whatever a stage emitted is sent as exactly one datagram.
+    /// One unit is one datagram. Nothing declared any framing for the
+    /// overwhelming majority of chunks, which is one unit, so this is the
+    /// one-in-one-out mapping a datagram path expects.
     Datagram(DatagramSocket),
     Link(Outlet),
 }
@@ -464,27 +478,43 @@ impl From<Downstream> for Dest {
 
 impl Dest {
     /// False when there is nowhere left to send. See [`Outlet::send`].
-    async fn send(&mut self, bytes: &[u8]) -> anyhow::Result<bool> {
+    async fn send(&mut self, emitted: Emitted<'_>) -> anyhow::Result<bool> {
         match self {
+            // A byte stream has no framing of its own, so units are written
+            // together: the peer cannot tell one call from several, and one
+            // is cheaper.
             Dest::Stream(writer) => {
-                if !bytes.is_empty() {
-                    writer.write_all(bytes).await?;
+                if !emitted.is_empty() {
+                    writer.write_all(emitted.bytes()).await?;
                 }
             }
             Dest::Datagram(socket) => {
-                // Not sent when empty. `run_pipeline` calls this once more at end of streamwith
-                // whatever `finish` produced, which is usually nothing. On a
-                // datagram sink that would put a spurious zero-length message on the wire. Many
-                // peers read that as end of stream and close.
+                // One unit, one message.
                 //
-                // The cost is that a genuine zero-length datagram is dropped rather than
-                // forwarded. That is the rarer case, and a silent extra message
-                // is worse than a missing empty one
-                if !bytes.is_empty() {
-                    socket.send(bytes).await?;
+                // Nothing is sent for an empty emission. `run_pipeline` calls
+                // this once more at end of stream with whatever `finish`
+                // produced, which is usually nothing. On a datagram sink that
+                // would put a spurious zero-length message on the wire, and
+                // many peers read that as end of stream and close.
+                //
+                // The cost is that a genuine zero-length datagram is dropped
+                // rather than forwarded. That is the rarer case, and a silent
+                // extra message is worse than a missing empty one.
+                for unit in emitted.units() {
+                    if !unit.is_empty() {
+                        socket.send(unit).await?;
+                    }
                 }
             }
-            Dest::Link(outlet) => return outlet.send(bytes).await,
+            // One unit, one parcel, so the segment downstream is called once
+            // per unit and the framing survives the hop.
+            Dest::Link(outlet) => {
+                for unit in emitted.units() {
+                    if !outlet.send(unit).await? {
+                        return Ok(false);
+                    }
+                }
+            }
         }
 
         Ok(true)
@@ -536,9 +566,11 @@ async fn run_pipeline(
                     biased;
                     chunk = input.next() => chunk?,
                     _ = ticker.tick() => {
-                        drive_ticks(&mut pipeline, &mut output, &channels, &mut effects).await?;
+                        let alive =
+                            drive_ticks(&mut pipeline, &mut output, &channels, &mut effects)
+                                .await?;
 
-                        if !flow(&mut effects).await {
+                        if !alive || !flow(&mut effects).await {
                             break;
                         }
 
@@ -557,14 +589,14 @@ async fn run_pipeline(
 
         // Borrows the read buffer when every stage passed through, so a chain
         // of observers hands the original bytes straight to the destination.
-        let bytes = pipeline.process(chunk, &mut effects)?;
+        let emitted = pipeline.process(chunk, &mut effects)?;
 
         // Nothing staged (no tee, or a chunk it swallowed): skip the join and
         // the apply future rather than polling one that would do nothing.
         let alive = if effects.is_empty() {
-            output.send(bytes).await?
+            output.send(emitted).await?
         } else {
-            tokio::try_join!(output.send(bytes), channels.apply(&mut effects))?.0
+            tokio::try_join!(output.send(emitted), channels.apply(&mut effects))?.0
         };
 
         // After the write, never before it: a stage that asked to stop or to
@@ -575,8 +607,8 @@ async fn run_pipeline(
     }
 
     // Stages holding buffered bytes get one last chance to emit them.
-    let bytes = pipeline.finish(&mut effects)?;
-    output.send(bytes).await?;
+    let emitted = pipeline.finish(&mut effects)?;
+    output.send(emitted).await?;
     channels.apply(&mut effects).await?;
     output.finish().await?;
 
@@ -614,23 +646,29 @@ async fn flow(effects: &mut Effects) -> bool {
 ///
 /// One `now` for the whole sweep, so two stages due on the same wakeup measure
 /// against the same instant rather than against how long the first one took.
+///
+/// Returns false when the destination went away, which the caller treats as
+/// end of stream exactly as it does on the data path. A ticking stage above a
+/// segment that has finished would otherwise keep waking up and writing into a
+/// closed channel for as long as the source stayed open.
 async fn drive_ticks(
     pipeline: &mut Pipeline,
     output: &mut Dest,
     channels: &Channels,
     effects: &mut Effects,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let now = Instant::now();
+    let mut alive = true;
 
-    while let Some(bytes) = pipeline.tick(now, &mut *effects)? {
-        output.send(bytes).await?;
+    while let Some(emitted) = pipeline.tick(now, &mut *effects)? {
+        alive &= output.send(emitted).await?;
     }
 
     if !effects.is_empty() {
         channels.apply(effects).await?;
     }
 
-    Ok(())
+    Ok(alive)
 }
 
 /// Sending half of a segment boundary, with a return path for spent buffers.

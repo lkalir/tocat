@@ -1,0 +1,14 @@
+[package]
+name = "tocat-plugin-block"
+version.workspace = true
+description = "tocat plugin that accumulates a path into fixed-size blocks"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+tocat-api = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

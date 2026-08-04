@@ -1,9 +1,9 @@
-//! progress.rs — a `pv`-style progress line on stderr.
+//! progress.rs: a `pv`-style progress line on stderr.
 //!
 //! Three pieces. [`Meter`] is the shared count: two atomics, one per path,
 //! plus the clock and (when it is knowable) the expected total. [`Counted`] is
 //! the adapter that feeds it, wrapped around a read half so the count happens
-//! inside `poll_read` — measuring at the endpoint, before any stage sees the
+//! inside `poll_read`, measuring at the endpoint, before any stage sees the
 //! bytes, which is what `pv` reports and what the `rate` plugin deliberately
 //! does not. [`Painter`] redraws the line on a timer.
 //!
@@ -19,8 +19,8 @@
 //! writing to stderr lands on top of it. Log output goes through [`LogWriter`],
 //! which erases the line before each event and lets the next tick redraw it,
 //! and both take the same `std::io::stderr` lock, so a frame and a log line
-//! cannot interleave. Everything else on that stream — notably a `tee` pointed
-//! at stderr — is outside that arrangement, which is why [`Relay`] warns when
+//! cannot interleave. Everything else on that stream, notably a `tee` pointed
+//! at stderr, is outside that arrangement, which is why [`Relay`] warns when
 //! the two are used together.
 //!
 //! No ANSI: erasing is a carriage return, spaces, and another carriage return.
@@ -98,7 +98,7 @@ pub struct Meter {
     connections: AtomicUsize,
     started: Instant,
     /// Total bytes expected on the forward path, when that is knowable. Absent
-    /// means no bar, no percentage and no ETA — the `pv`-on-a-pipe display.
+    /// means no bar, no percentage and no ETA: the `pv`-on-a-pipe display.
     expected: Option<u64>,
 }
 
@@ -190,9 +190,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for Counted<R> {
 /// Attach counting to a read half.
 ///
 /// A stream is wrapped, so the count happens inside `poll_read` wherever the
-/// bytes are eventually read. A datagram socket has nothing to wrap — `pump`
+/// bytes are eventually read. A datagram socket has nothing to wrap (`pump`
 /// calls `recv` on it directly, and the write half is a clone of the same
-/// socket — so the counter is handed back for the pump to use instead.
+/// socket) so the counter is handed back for the pump to use instead.
 /// Exactly one of the two happens, which is what stops the two paths from
 /// counting the same bytes twice.
 pub fn count(

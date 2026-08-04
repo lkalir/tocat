@@ -1,4 +1,4 @@
-//! tocat — a socat-inspired relay with a plugin pipeline between its endpoints.
+//! tocat: a socat-inspired relay with a plugin pipeline between its endpoints.
 //!
 //! Startup is ordered around two constraints that are easy to break:
 //!
@@ -10,7 +10,7 @@
 //!   configuration, so they exit before anything opens a socket or a file.
 //!
 //! After that: merge the config file with the CLI, resolve endpoints, build the
-//! plugin registry, then `Relay::new` — which constructs every declared plugin
+//! plugin registry, then `Relay::new`, which constructs every declared plugin
 //! and opens its side channels, so a bad declaration fails here rather than on
 //! the first byte of the first connection.
 

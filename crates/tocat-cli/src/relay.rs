@@ -1,4 +1,4 @@
-//! relay.rs — connection lifecycle.
+//! relay.rs: connection lifecycle.
 //!
 //! [`Relay`] owns the two endpoints, the plugin declarations, and the side
 //! channels those declarations resolved to. Construction is where validation
@@ -110,7 +110,7 @@ fn copy_sync(
 
     loop {
         // Checked per chunk because this task cannot be cancelled from outside.
-        // A read that blocks indefinitely — a FIFO with no writer — still will
+        // A read that blocks indefinitely (a FIFO with no writer) still will
         // not notice; the runtime's shutdown timeout covers that.
         if shutdown.is_triggered() {
             info!(bytes = total, "interrupted");

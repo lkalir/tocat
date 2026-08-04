@@ -1,4 +1,4 @@
-//! `compress` / `decompress` — zstd stages for tocat.
+//! `compress` / `decompress`: zstd stages for tocat.
 //!
 //! # Direction
 //!
@@ -285,7 +285,8 @@ impl PluginFactory for DecompressFactory {
 mod tests {
     use serde_json::{Value, json};
     use tocat_api::{
-        ChannelId, ChannelTarget, Direction, EffectSink, Emit, HostBuilder, PipelineMeta, StageInfo,
+        ChannelId, ChannelTarget, Direction, EffectSink, Emission, HostBuilder, PipelineMeta,
+        StageInfo,
     };
 
     use super::*;
@@ -330,28 +331,26 @@ mod tests {
 
     fn feed(plugin: &mut dyn Plugin, input: &[u8]) -> Vec<u8> {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
         let mut sink = Silent;
         {
-            let mut ctx = Ctx::new(&meta, "compress", input, &mut out, &mut emit, &mut sink);
+            let mut ctx = Ctx::new(&meta, "compress", input, &mut emission, &mut sink);
             plugin.on_bytes(&mut ctx, input).expect("on_bytes");
         }
 
-        out
+        emission.bytes().to_vec()
     }
 
     fn finish(plugin: &mut dyn Plugin) -> Vec<u8> {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
         let mut sink = Silent;
         {
-            let mut ctx = Ctx::new(&meta, "compress", &[], &mut out, &mut emit, &mut sink);
+            let mut ctx = Ctx::new(&meta, "compress", &[], &mut emission, &mut sink);
             plugin.on_eof(&mut ctx).expect("on_eof");
         }
 
-        out
+        emission.bytes().to_vec()
     }
 
     #[test]

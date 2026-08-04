@@ -198,8 +198,8 @@ impl PluginFactory for LimitFactory {
 mod tests {
     use serde_json::json;
     use tocat_api::{
-        ChannelId, ChannelTarget, Direction, EffectSink, Emit, HostBuilder, LogLevel, PipelineMeta,
-        Result as PluginResult, StageInfo,
+        ChannelId, ChannelTarget, Direction, EffectSink, Emission, Emit, HostBuilder, LogLevel,
+        PipelineMeta, Result as PluginResult, StageInfo,
     };
 
     use super::*;
@@ -268,17 +268,16 @@ mod tests {
     /// passthrough, the buffer otherwise.
     fn feed(plugin: &mut dyn Plugin, sink: &mut Recorder, input: &[u8]) -> Vec<u8> {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
 
         {
-            let mut ctx = Ctx::new(&meta, NAME, input, &mut out, &mut emit, sink);
+            let mut ctx = Ctx::new(&meta, NAME, input, &mut emission, sink);
             plugin.on_bytes(&mut ctx, input).expect("on_bytes");
         }
 
-        match emit {
+        match emission.emit() {
             Emit::Passthrough => input.to_vec(),
-            Emit::Buffered => out,
+            Emit::Buffered => emission.bytes().to_vec(),
             Emit::Pending => Vec::new(),
         }
     }

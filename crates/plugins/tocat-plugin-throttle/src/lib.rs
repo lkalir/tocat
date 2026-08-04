@@ -154,8 +154,8 @@ impl PluginFactory for ThrottleFactory {
 mod tests {
     use serde_json::json;
     use tocat_api::{
-        ChannelId, ChannelTarget, Direction, EffectSink, Emit, HostBuilder, LogLevel, PipelineMeta,
-        Result as PluginResult, StageInfo,
+        ChannelId, ChannelTarget, Direction, EffectSink, Emission, Emit, HostBuilder, LogLevel,
+        PipelineMeta, Result as PluginResult, StageInfo,
     };
 
     use super::*;
@@ -208,16 +208,19 @@ mod tests {
 
     fn feed(plugin: &mut dyn Plugin, sink: &mut Recorder, input: &[u8]) -> Emit {
         let meta = meta();
-        let mut out = Vec::new();
-        let mut emit = Emit::Pending;
+        let mut emission = Emission::new();
 
         {
-            let mut ctx = Ctx::new(&meta, NAME, input, &mut out, &mut emit, sink);
+            let mut ctx = Ctx::new(&meta, NAME, input, &mut emission, sink);
             plugin.on_bytes(&mut ctx, input).expect("on_bytes");
         }
 
-        assert!(out.is_empty(), "throttle must never copy the payload");
-        emit
+        assert!(
+            emission.bytes().is_empty(),
+            "throttle must never copy the payload",
+        );
+
+        emission.emit()
     }
 
     #[test]

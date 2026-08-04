@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 tocat-api = { path = "../tocat-api" }
+tocat-plugin-block = { path = "../plugins/tocat-plugin-block", optional = true }
 tocat-plugin-compress = {
   path = "../plugins/tocat-plugin-compress",
   optional = true
@@ -25,7 +26,8 @@ tocat-plugin-throttle = {
 }
 
 [features]
-default = ["compress", "limit", "process", "rate", "tee", "throttle"]
+default = ["block", "compress", "limit", "process", "rate", "tee", "throttle"]
+block = ["dep:tocat-plugin-block"]
 compress = ["dep:tocat-plugin-compress"]
 limit = ["dep:tocat-plugin-limit"]
 process = ["dep:tocat-plugin-process"]

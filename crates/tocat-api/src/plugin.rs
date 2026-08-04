@@ -11,6 +11,11 @@
 //! The split between the two contexts is the point: everything expensive or
 //! fallible belongs to build time, so the per-chunk path is a synchronous call
 //! that either forwards a slice or writes into a buffer.
+//!
+//! A call emits one unit by default, however many times it forwards: the
+//! pieces concatenate, and the host delivers them as one write. A stage that
+//! needs them kept apart says so with [`Ctx::boundary`], which is what turns a
+//! stage that merely accumulates bytes into one that records them.
 
 use std::time::Duration;
 
@@ -49,14 +54,16 @@ pub enum Execution {
 }
 
 /// What a stage decided to do with the chunk it was given.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Emit {
     /// Nothing emitted; the chunk stops here.
+    #[default]
     Pending,
     /// Input forwarded verbatim. The host reuses the input slice, copying
     /// nothing.
     Passthrough,
-    /// The stage wrote its own bytes into the output buffer.
+    /// The stage wrote its own bytes into the output buffer, and any framing
+    /// it declared along with them.
     Buffered,
 }
 
@@ -182,6 +189,86 @@ impl StageInfo<'_> {
     }
 }
 
+/// What one call to a stage produced: the bytes it emitted, how they are
+/// framed, and what it asked the host to do about its own schedule.
+///
+/// One struct rather than four borrows because they are written together and
+/// read together, and because a stage's whole answer is exactly these four
+/// things. The host keeps one per buffer and resets it between calls, so a
+/// steady stream allocates nothing here after the first few chunks.
+#[derive(Debug, Default)]
+pub struct Emission {
+    /// Bytes the stage wrote. Empty when it passed through or emitted nothing.
+    pub(crate) out: Vec<u8>,
+    /// One offset per unit, each the end of its unit. Empty means unframed,
+    /// which is one unit covering everything.
+    pub(crate) bounds: Vec<usize>,
+    pub(crate) emit: Emit,
+    /// Whether the stage asked for its tick schedule to be restarted.
+    pub(crate) rearm: bool,
+}
+
+impl Emission {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ready for a fresh call, keeping the allocations.
+    pub fn reset(&mut self) {
+        self.out.clear();
+        self.bounds.clear();
+        self.emit = Emit::Pending;
+        self.rearm = false;
+    }
+
+    /// Ready for the next unit of a framed call.
+    ///
+    /// What has been emitted so far stays, because units concatenate into one
+    /// buffer, but the decision is per unit. A rearm request is not cleared
+    /// either: it is about the stage, not about the unit.
+    pub(crate) fn next_unit(&mut self) {
+        self.emit = Emit::Pending;
+    }
+
+    /// Close the unit left open, so `bounds` always ends where `out` does.
+    ///
+    /// Does nothing when no bytes have arrived since the last boundary, so a
+    /// stage cannot declare an empty unit, and nothing at all on an empty
+    /// emission. Note that this frames an emission that had declared no
+    /// framing, so the host calls it only where that is what it means.
+    pub(crate) fn close(&mut self) {
+        if self.bounds.last().copied().unwrap_or(0) < self.out.len() {
+            self.bounds.push(self.out.len());
+        }
+    }
+
+    /// Everything the stage emitted, concatenated.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.out
+    }
+
+    /// The framing of [`bytes`](Self::bytes). Empty means one unit.
+    #[must_use]
+    pub fn bounds(&self) -> &[usize] {
+        &self.bounds
+    }
+
+    /// What the stage did with what it was given.
+    #[must_use]
+    pub fn emit(&self) -> Emit {
+        self.emit
+    }
+
+    /// Whether the stage asked for its schedule to be restarted. See
+    /// [`Ctx::rearm`].
+    #[must_use]
+    pub fn rearm_requested(&self) -> bool {
+        self.rearm
+    }
+}
+
 /// Handed to a plugin for each chunk.
 ///
 /// A stage must say what happens to the chunk:
@@ -189,12 +276,15 @@ impl StageInfo<'_> {
 /// [`forward`](Self::forward) emits different bytes, and doing neither drops
 /// it. Passthrough is the fast path and costs nothing (the next stage receives
 /// the same slice).
+///
+/// Several calls to `forward` in one turn emit one unit, not several: the
+/// bytes concatenate and are delivered together. [`boundary`](Self::boundary)
+/// is how a stage says otherwise.
 pub struct Ctx<'a> {
     meta: &'a PipelineMeta,
     stage: &'a str,
     input: &'a [u8],
-    out: &'a mut Vec<u8>,
-    emit: &'a mut Emit,
+    emission: &'a mut Emission,
     sink: &'a mut dyn EffectSink,
 }
 
@@ -203,16 +293,14 @@ impl<'a> Ctx<'a> {
         meta: &'a PipelineMeta,
         stage: &'a str,
         input: &'a [u8],
-        out: &'a mut Vec<u8>,
-        emit: &'a mut Emit,
+        emission: &'a mut Emission,
         sink: &'a mut dyn EffectSink,
     ) -> Self {
         Self {
             meta,
             stage,
             input,
-            out,
-            emit,
+            emission,
             sink,
         }
     }
@@ -241,31 +329,88 @@ impl<'a> Ctx<'a> {
 
     /// Forward the input unchanged, without copying it.
     pub fn pass_through(&mut self) {
-        match *self.emit {
-            Emit::Pending => *self.emit = Emit::Passthrough,
+        match self.emission.emit {
+            Emit::Pending => self.emission.emit = Emit::Passthrough,
             Emit::Passthrough => {}
             // Something was emitted already, so passthrough has to materialise.
-            Emit::Buffered => self.out.extend_from_slice(self.input),
+            Emit::Buffered => {
+                let input = self.input;
+                self.emission.out.extend_from_slice(input);
+            }
         }
     }
 
     /// Emit `bytes` downstream. Performs a copy. Use
     /// [`pass_through`](Self::pass_through) when the bytes are the input.
+    ///
+    /// Appends: calling this twice emits both, in order, as one unit. Call
+    /// [`boundary`](Self::boundary) between them to emit two.
     pub fn forward(&mut self, bytes: &[u8]) {
-        if *self.emit == Emit::Passthrough {
-            self.out.extend_from_slice(self.input);
+        if self.emission.emit == Emit::Passthrough {
+            let input = self.input;
+            self.emission.out.extend_from_slice(input);
         }
 
-        *self.emit = Emit::Buffered;
-        self.out.extend_from_slice(bytes);
+        self.emission.emit = Emit::Buffered;
+        self.emission.out.extend_from_slice(bytes);
     }
 
     /// Explicitly swallow the chunk. Emitting nothing does the same thing; this
     /// exists so a filter can state the intent.
     pub fn drop_chunk(&mut self) {
-        if *self.emit == Emit::Passthrough {
-            *self.emit = Emit::Pending;
+        if self.emission.emit == Emit::Passthrough {
+            self.emission.emit = Emit::Pending;
         }
+    }
+
+    /// End the current unit. What was forwarded since the last boundary is
+    /// delivered on its own: one write at a byte sink, one message at a
+    /// datagram sink, one parcel across a detached boundary, and one
+    /// [`on_bytes`](Plugin::on_bytes) call at every stage below.
+    ///
+    /// Only worth calling when those splits are the point, as with a stage
+    /// cutting a stream into fixed-size records. Framing is not free: each
+    /// stage below is then called once per unit rather than once per chunk, so
+    /// a stage that emits many small units is asking the rest of the segment
+    /// to run many times. A stage that only rewrites bytes should leave the
+    /// framing it was given alone and say nothing.
+    ///
+    /// The trailing unit does not need one: whatever is forwarded after the
+    /// last boundary is closed automatically, so no bytes can be lost by
+    /// forgetting.
+    ///
+    /// Ignored when nothing has been forwarded since the last call, so a stage
+    /// cannot emit an empty unit by accident.
+    pub fn boundary(&mut self) {
+        if self.emission.emit == Emit::Passthrough {
+            let input = self.input;
+            self.emission.out.extend_from_slice(input);
+            self.emission.emit = Emit::Buffered;
+        }
+
+        self.emission.close();
+    }
+
+    /// Restart this stage's tick schedule: the next
+    /// [`on_tick`](Plugin::on_tick) falls a full interval from now rather than
+    /// wherever the existing cadence happens to land.
+    ///
+    /// A stage cannot read a clock, so it cannot measure how long it has been
+    /// holding something. What it can do is say when the waiting started, and
+    /// this is how. A stage that begins accumulating calls this, and its next
+    /// tick then means "an interval since you asked" rather than "an interval
+    /// since some earlier moment you know nothing about".
+    ///
+    /// Without it, [`tick_interval`](Plugin::tick_interval) is a cadence
+    /// rather than a delay: a tick that came due while bytes were flowing
+    /// fires at the next opportunity, which can be immediately after the bytes
+    /// it is about arrived.
+    ///
+    /// Cheap to call, and harmless to call often: it sets a flag the host
+    /// reads once at the end of the call. Ignored for a stage that asked for
+    /// no ticks.
+    pub fn rearm(&mut self) {
+        self.emission.rearm = true;
     }
 
     /// Stage bytes for a side channel obtained from [`BuildCtx::open_channel`].
@@ -434,6 +579,10 @@ pub trait Plugin: Send {
 
     /// A chunk arrived from upstream. `input` is the same slice as
     /// [`Ctx::input`]; it is passed separately because it is the hot argument.
+    ///
+    /// One call is one unit. Where a stage above declared framing with
+    /// [`Ctx::boundary`] that is one call per unit rather than one per chunk,
+    /// so a stage never has to unpick two of them from a single slice.
     fn on_bytes(&mut self, ctx: &mut Ctx<'_>, input: &[u8]) -> Result<()>;
 
     /// Upstream reached EOF. Last chance to emit buffered bytes.
@@ -479,8 +628,11 @@ pub trait Plugin: Send {
     /// should report [`datagram_safe`](Plugin::datagram_safe) as false. A
     /// stage that only observes need not.
     ///
+    /// What is emitted here is one unit unless [`Ctx::boundary`] says
+    /// otherwise, exactly as in [`on_bytes`](Plugin::on_bytes).
+    ///
     /// Ticks run for the life of the pipeline and stop at end of stream, so
-    /// they arrive whether or not anything is moving — which is the point, and
+    /// they arrive whether or not anything is moving, which is the point, and
     /// is what a keepalive needs. A stage that has nothing to say until the
     /// first chunk has arrived is expected to keep that state itself.
     fn on_tick(&mut self, ctx: &mut Ctx<'_>) -> Result<()> {
@@ -496,6 +648,12 @@ pub trait Plugin: Send {
     /// datagram, and whatever it emits is sent as exactly one datagram. A
     /// stage that buffers across calls, or emits two messages' worth from one,
     /// silently corrupts the protocol.
+    ///
+    /// [`Ctx::boundary`] makes the second of those sayable rather than silent:
+    /// a stage that emits several units emits several messages. That is still
+    /// a rewrite of the peer's message stream rather than a preservation of
+    /// it, so a stage doing it should say false here and let the host decide
+    /// whether to warn.
     ///
     /// Defaults to false because that is the safe answer for a stage that has
     /// not thought about it, including any plugin loaded from outside this

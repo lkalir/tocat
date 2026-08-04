@@ -25,8 +25,17 @@ pub fn native_registry() -> Registry {
 /// Separate from [`native_registry`] so a host that also loads WASM modules can
 /// populate one registry from both sources.
 pub fn register_native(registry: &mut Registry) {
-    #[cfg(feature = "tee")]
-    registry.register(tocat_plugin_tee::TeeFactory);
+    #[cfg(feature = "block")]
+    registry.register(tocat_plugin_block::BlockFactory);
+
+    #[cfg(feature = "compress")]
+    {
+        registry.register(tocat_plugin_compress::CompressFactory);
+        registry.register(tocat_plugin_compress::DecompressFactory);
+    }
+
+    #[cfg(feature = "limit")]
+    registry.register(tocat_plugin_limit::LimitFactory);
 
     #[cfg(feature = "process")]
     registry.register(tocat_plugin_process::ProcessFactory);
@@ -34,17 +43,11 @@ pub fn register_native(registry: &mut Registry) {
     #[cfg(feature = "rate")]
     registry.register(tocat_plugin_rate::RateFactory);
 
-    #[cfg(feature = "limit")]
-    registry.register(tocat_plugin_limit::LimitFactory);
+    #[cfg(feature = "tee")]
+    registry.register(tocat_plugin_tee::TeeFactory);
 
     #[cfg(feature = "throttle")]
     registry.register(tocat_plugin_throttle::ThrottleFactory);
-
-    #[cfg(feature = "compress")]
-    {
-        registry.register(tocat_plugin_compress::CompressFactory);
-        registry.register(tocat_plugin_compress::DecompressFactory);
-    }
 
     // So clippy doesn't get mad if no features are enabled
     let _ = registry;
