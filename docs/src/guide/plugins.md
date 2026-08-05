@@ -32,6 +32,7 @@ Run `tocat --list-plugins` to see what your build has, and `--no-plugins` to ign
 | [`block`](plugins/block.md)       | Cut the path into fixed-size records   | reframed  | inline      | warns: boundaries are its own     |
 | [`compress`](plugins/compress.md) | zstd compress or decompress            | rewritten | detached    | warns                             |
 | [`process`](plugins/process.md)   | Pipe the path through a child process  | rewritten | own process | warns                             |
+| [`timeout`](plugins/timeout.md)   | End the path once it has gone quiet    | untouched | inline      | safe                              |
 
 "Datagram paths" is what each stage reports about itself, and it is what tocat checks when the destination on that path is a datagram endpoint. The
 default for a stage that says nothing, including any plugin from outside the binary, is that it is not safe.

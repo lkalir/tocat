@@ -28,6 +28,7 @@ the first byte held rather than from wherever a shared cadence happened to be.
 |------------|--------------------------------------------------------------|----------|
 | `rate`     | Samples on a fixed cadence, so a stalled stream is reported  | the tick |
 | `block`    | A bound on how long a byte waits, measured from that byte    | `rearm`  |
+| `timeout`  | A deadline measured from the last byte, to a known accuracy  | both     |
 
 ## What it costs
 
@@ -37,6 +38,11 @@ timer each. A segment with nothing ticking builds no timer at all and awaits its
 
 So the cost is one timer per segment per direction per connection, which multiplies under `fork`: a stage asking for milliseconds is asking every
 forked connection to wake up that often. A stage should return `None` when its options do not require ticking, which is what `rate,interval=0` does.
+
+A stage that needs a deadline rather than a cadence needs both halves: `rearm` so the count starts from the last byte, and a period some fraction of the
+deadline so that the host's cadence rounds the answer by that fraction rather than by the whole thing. `timeout` asks for a quarter of its window and
+halts on the fourth consecutive idle tick, which is what bounds its error at a quarter rather than at one whole window.
+
 
 Two details of the host's timing are worth relying on. Reads win the race against the timer, so payload never waits behind bookkeeping. And a segment
 that fell behind does not then fire a burst of catch-up ticks: a missed schedule resumes from now, and a stage that wants to know how long it was away

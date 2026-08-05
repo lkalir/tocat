@@ -46,6 +46,9 @@ pub fn register_native(registry: &mut Registry) {
     #[cfg(feature = "tee")]
     registry.register(tocat_plugin_tee::TeeFactory);
 
+    #[cfg(feature = "timeout")]
+    registry.register(tocat_plugin_timeout::TimeoutFactory);
+
     #[cfg(feature = "throttle")]
     registry.register(tocat_plugin_throttle::ThrottleFactory);
 

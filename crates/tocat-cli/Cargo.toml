@@ -51,7 +51,8 @@ all-plugins = [
   "process",
   "rate",
   "tee",
-  "throttle"
+  "throttle",
+  "timeout"
 ]
 block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
@@ -60,6 +61,7 @@ process = ["tocat-plugins/process"]
 rate = ["tocat-plugins/rate"]
 tee = ["tocat-plugins/tee"]
 throttle = ["tocat-plugins/throttle"]
+timeout = ["tocat-plugins/timeout"]
 tokio-console = ["dep:console-subscriber"]
 
 [lints.rust]

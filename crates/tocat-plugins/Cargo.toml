@@ -24,9 +24,22 @@ tocat-plugin-throttle = {
   path = "../plugins/tocat-plugin-throttle",
   optional = true
 }
+tocat-plugin-timeout = {
+  path = "../plugins/tocat-plugin-timeout",
+  optional = true
+}
 
 [features]
-default = ["block", "compress", "limit", "process", "rate", "tee", "throttle"]
+default = [
+  "block",
+  "compress",
+  "limit",
+  "process",
+  "rate",
+  "tee",
+  "throttle",
+  "timeout"
+]
 block = ["dep:tocat-plugin-block"]
 compress = ["dep:tocat-plugin-compress"]
 limit = ["dep:tocat-plugin-limit"]
@@ -34,3 +47,4 @@ process = ["dep:tocat-plugin-process"]
 rate = ["dep:tocat-plugin-rate"]
 tee = ["dep:tocat-plugin-tee"]
 throttle = ["dep:tocat-plugin-throttle"]
+timeout = ["dep:tocat-plugin-timeout"]

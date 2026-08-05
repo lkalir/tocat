@@ -22,6 +22,7 @@
   - [limit](guide/plugins/limit.md)
   - [throttle](guide/plugins/throttle.md)
   - [block](guide/plugins/block.md)
+  - [timeout](guide/plugins/timeout.md)
 - [Buffers](guide/buffers.md)
 - [Progress](guide/progress.md)
 - [Configuration](guide/configuration.md)

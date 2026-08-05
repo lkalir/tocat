@@ -87,6 +87,9 @@
           "$ref": "#/$defs/plugin-block"
         },
         {
+          "$ref": "#/$defs/plugin-timeout"
+        },
+        {
           "$ref": "#/$defs/plugin-other"
         }
       ]
@@ -1168,6 +1171,46 @@
             "drop",
             "exact",
             "overshoot"
+          ]
+        }
+      }
+    },
+    "plugin-timeout": {
+      "title": "timeout",
+      "type": "object",
+      "description": "End this path when it has carried nothing for `timeout`. The payload is untouched and the stage never emits: reaching the timeout stops the read, which the relay treats as upstream end of stream arriving early, so buffered stages are drained, sinks are flushed and tocat exits successfully. The window is per path, so with direction 'both' each direction times out on its own traffic. Note that a ticking stage costs timers per direction per connection, which multiplies under fork.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "timeout"
+      ],
+      "properties": {
+        "name": {
+          "const": "timeout",
+          "description": "Selects the timeout plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "timeout": {
+          "description": "How long the path may go without carrying a byte before it is ended: a number of seconds, or a string with suffixes ('30s', '2m', '1m30s'). Must be greater than zero. The halt lands within a quarter of the timeout of where it was asked for, or within one whole timeout below 400ms, where the stage stops subdividing the window. Aliases: wait, inactivity, idle.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *([0-9]+ *(ns|us|ms|s|m|h|d|w)? *)+$"
+            }
           ]
         }
       }

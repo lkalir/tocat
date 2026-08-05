@@ -35,6 +35,7 @@ $ cargo install --path crates/tocat-cli --no-default-features
 | `rate`         | [`rate`](plugins/rate.md)                                                   |
 | `tee`          | [`tee`](plugins/tee.md)                                                     |
 | `throttle`     | [`throttle`](plugins/throttle.md)                                           |
+| `timeout`      | [`timeout`](plugins/timeout.md)                                             |
 | `tokio-console`| A `console-subscriber` layer, for inspecting the runtime with `tokio-console` |
 
 Each plugin that brings its own dependency tree is its own crate under `crates/plugins/`, wired in through the `tocat-plugins` facade. `tocat-cli`
