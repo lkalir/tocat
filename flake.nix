@@ -81,6 +81,7 @@
             ./Cargo.toml
             ./Cargo.lock
             ./crates
+            ./tocat.schema.json
           ];
         };
 
