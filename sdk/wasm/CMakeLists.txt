@@ -2,23 +2,23 @@
 #
 # Installs the guest ABI header and a CMake package that gives a downstream
 # project one function, tocat_add_wasm_guest(), and a toolchain file for
-# targeting wasm32. The guests under examples/ are built with the same
-# function a consumer would use, so the example and the supported path cannot
-# drift apart.
+# targeting wasm32. The guests under examples/ are built with the same function
+# a consumer would use, so the example and the supported path cannot drift
+# apart.
 #
-#   cmake -S sdk/wasm -B build/wasm \
-#         -DCMAKE_TOOLCHAIN_FILE=$PWD/sdk/wasm/cmake/wasm32-toolchain.cmake
-#   cmake --build build/wasm
+# cmake -S sdk/wasm -B build/wasm \
+# -DCMAKE_TOOLCHAIN_FILE=$PWD/sdk/wasm/cmake/wasm32-toolchain.cmake cmake
+# --build build/wasm
 #
-# Configuring without that toolchain file is supported and installs the
-# headers and the package: a consumer cross-compiling their own guests does
-# not need a wasm compiler present when the SDK is installed.
+# Configuring without that toolchain file is supported and installs the headers
+# and the package: a consumer cross-compiling their own guests does not need a
+# wasm compiler present when the SDK is installed.
 
 cmake_minimum_required(VERSION 3.21)
 
-# The version comes from the workspace, so the SDK and the binary that loads
-# its guests cannot claim different ones. Falls back when the SDK has been
-# copied out of the repository on its own.
+# The version comes from the workspace, so the SDK and the binary that loads its
+# guests cannot claim different ones. Falls back when the SDK has been copied
+# out of the repository on its own.
 set(TOCAT_WASM_VERSION 0.0.0)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../Cargo.toml")
@@ -50,8 +50,8 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 include(cmake/TocatWasmGuest.cmake)
 
-# The ABI version is declared by the generated header, since the wire format
-# is generated from crates/tocat-abi rather than written here. Reading it back
+# The ABI version is declared by the generated header, since the wire format is
+# generated from crates/tocat-wasm-abi rather than written here. Reading it back
 # out means the package can expose it without a second place to update.
 set(TOCAT_WASM_ABI_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/include/tocat/abi.h")
 
@@ -59,8 +59,8 @@ if(NOT EXISTS "${TOCAT_WASM_ABI_HEADER}")
   message(
     FATAL_ERROR
       "${TOCAT_WASM_ABI_HEADER} is missing. It is generated from "
-      "crates/tocat-abi and committed; regenerate it with\n"
-      "  cargo run -p tocat-abi --features generate --bin tocat-abi-header")
+      "crates/tocat-wasm-abi and committed; regenerate it with\n"
+      "  cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header")
 endif()
 
 file(READ "${TOCAT_WASM_ABI_HEADER}" tocat_abi_header)
@@ -84,8 +84,8 @@ target_include_directories(
                        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # A guest is one translation unit that imports nothing, so the SDK is a header
-# and a set of flags. There is deliberately no library to link: a runtime is
-# the thing a guest must not have.
+# and a set of flags. There is deliberately no library to link: a runtime is the
+# thing a guest must not have.
 
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "wasm32")
   set(tocat_examples_default ON)
@@ -128,9 +128,9 @@ configure_package_config_file(
   ${CMAKE_CURRENT_BINARY_DIR}/TocatWasmConfig.cmake
   INSTALL_DESTINATION ${TOCAT_WASM_CMAKE_DIR})
 
-# The ABI is versioned separately from the crate, and a guest built against
-# ABI 1 keeps working, so compatibility here is about the header's helpers
-# rather than about the wire format.
+# The ABI is versioned separately from the crate, and a guest built against ABI
+# 1 keeps working, so compatibility here is about the header's helpers rather
+# than about the wire format.
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/TocatWasmConfigVersion.cmake
   COMPATIBILITY SameMinorVersion)

@@ -1,9 +1,9 @@
 /*
  * The tocat WebAssembly guest ABI, version 1.
  *
- * Generated from crates/tocat-abi by cbindgen. Do not edit: run
+ * Generated from crates/tocat-wasm-abi by cbindgen. Do not edit: run
  *
- *     cargo run -p tocat-abi --features generate --bin tocat-abi-header
+ *     cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
  *
  * Include <tocat/tocat.h> rather than this file. That one adds the exports,
  * the arena and the helpers; this one is only the shape of the wire.

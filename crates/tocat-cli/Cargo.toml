@@ -1,17 +1,13 @@
 [package]
-name = "tocat-cli"
+name = "tocat"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "tocat"
-path = "src/main.rs"
-
 [dependencies]
-anyhow = {workspace = true}
-clap = {workspace = true}
+anyhow = { workspace = true }
+clap = { workspace = true }
 console-subscriber = { version = "0.5.0", optional = true }
 futures = "0.3.33"
 futures-util = "0.3.33"
@@ -19,7 +15,7 @@ rustix = { version = "1.1.4", features = ["fs", "pipe", "termios"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tocat-api = { workspace = true }
-tocat-plugins = { path = "../tocat-plugins", default-features = false }
+tocat-plugins = { path = "../tocat-plugins", version = "0.1.0", default-features = false }
 tokio = {
   version = "1.53.1",
   features = [
@@ -54,6 +50,16 @@ all-plugins = [
   "throttle",
   "timeout",
   "wasm"
+]
+all-plugins-no-wasm = [
+  "block",
+  "compress",
+  "limit",
+  "process",
+  "rate",
+  "tee",
+  "throttle",
+  "timeout",
 ]
 block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]

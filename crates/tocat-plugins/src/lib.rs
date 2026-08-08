@@ -10,6 +10,33 @@
 //! crate. [`register_native`] is the only seam, which is what makes moving a
 //! plugin between the two forms a non-event.
 
+#[cfg(feature = "block")]
+mod block;
+
+#[cfg(feature = "compress")]
+mod compress;
+
+#[cfg(feature = "limit")]
+mod limit;
+
+#[cfg(feature = "process")]
+mod process;
+
+#[cfg(feature = "rate")]
+mod rate;
+
+#[cfg(feature = "tee")]
+mod tee;
+
+#[cfg(feature = "throttle")]
+mod throttle;
+
+#[cfg(feature = "timeout")]
+mod timeout;
+
+#[cfg(feature = "wasm")]
+mod wasm;
+
 use tocat_api::Registry;
 
 /// A registry containing every plugin compiled into this binary.
@@ -26,34 +53,34 @@ pub fn native_registry() -> Registry {
 /// populate one registry from both sources.
 pub fn register_native(registry: &mut Registry) {
     #[cfg(feature = "block")]
-    registry.register(tocat_plugin_block::BlockFactory);
+    registry.register(block::BlockFactory);
 
     #[cfg(feature = "compress")]
     {
-        registry.register(tocat_plugin_compress::CompressFactory);
-        registry.register(tocat_plugin_compress::DecompressFactory);
+        registry.register(compress::CompressFactory);
+        registry.register(compress::DecompressFactory);
     }
 
     #[cfg(feature = "limit")]
-    registry.register(tocat_plugin_limit::LimitFactory);
+    registry.register(limit::LimitFactory);
 
     #[cfg(feature = "process")]
-    registry.register(tocat_plugin_process::ProcessFactory);
+    registry.register(process::ProcessFactory);
 
     #[cfg(feature = "rate")]
-    registry.register(tocat_plugin_rate::RateFactory);
+    registry.register(rate::RateFactory);
 
     #[cfg(feature = "tee")]
-    registry.register(tocat_plugin_tee::TeeFactory);
-
-    #[cfg(feature = "timeout")]
-    registry.register(tocat_plugin_timeout::TimeoutFactory);
+    registry.register(tee::TeeFactory);
 
     #[cfg(feature = "throttle")]
-    registry.register(tocat_plugin_throttle::ThrottleFactory);
+    registry.register(throttle::ThrottleFactory);
+
+    #[cfg(feature = "timeout")]
+    registry.register(timeout::TimeoutFactory);
 
     #[cfg(feature = "wasm")]
-    registry.register(tocat_plugin_wasm::WasmFactory);
+    registry.register(wasm::WasmFactory);
 
     // So clippy doesn't get mad if no features are enabled
     let _ = registry;

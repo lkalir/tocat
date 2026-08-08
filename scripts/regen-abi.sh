@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-cmd=(cargo run -p tocat-abi --features generate --bin tocat-abi-header)
+cmd=(cargo run -p tocat-wasm-abi --example tocat-abi-header)
 
 if ! "${cmd[@]}" -- --check; then
   "${cmd[@]}"

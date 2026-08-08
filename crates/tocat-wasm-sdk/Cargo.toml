@@ -1,10 +1,10 @@
 [package]
-name = "tocat-sdk"
+name = "tocat-wasm-sdk"
 version.workspace = true
-description = "Write tocat WebAssembly plugins in Rust"
 edition.workspace = true
+description = "Write tocat WebAssembly plugins in Rust"
 repository.workspace = true
 license.workspace = true
 
 [dependencies]
-tocat-abi = { workspace = true }
+tocat-wasm-abi = { workspace = true }

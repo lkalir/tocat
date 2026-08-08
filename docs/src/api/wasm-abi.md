@@ -98,12 +98,12 @@ that hands back a pointer outside its memory gets a runtime error naming the spa
 
 ## Where the ABI is defined
 
-`crates/tocat-abi` is the one definition of the wire format, and everything that touches it reads that crate rather than its own copy: the host decodes
-an outbox with it, `tocat-sdk` writes one with it, and `sdk/wasm/include/tocat/abi.h` is generated from it.
+`crates/tocat-wasm-abi` is the one definition of the wire format, and everything that touches it reads that crate rather than its own copy: the host decodes
+an outbox with it, `tocat-wasm-sdk` writes one with it, and `sdk/wasm/include/tocat/abi.h` is generated from it.
 
 ```console
-$ cargo run -p tocat-abi --features generate --bin tocat-abi-header
-$ cargo run -p tocat-abi --features generate --bin tocat-abi-header -- --check
+$ cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
+$ cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header -- --check
 ```
 
 The header is committed so that a C guest builds without a Rust toolchain, and `--check` is what stops a committed generated file drifting: it writes
@@ -116,7 +116,7 @@ the enum's discriminants are the constants.
 
 ## Guests in Rust
 
-`crates/tocat-sdk` is the Rust equivalent of `tocat.hpp`: a guest is a type implementing `Guest`, and `export_guest!` generates the arena, the outbox,
+`crates/tocat-wasm-sdk` is the Rust equivalent of `tocat.hpp`: a guest is a type implementing `Guest`, and `export_guest!` generates the arena, the outbox,
 the panic handler and all nine exports.
 
 ```rust,ignore

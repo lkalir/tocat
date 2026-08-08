@@ -26,7 +26,7 @@ use wasmtime::{
     StoreLimitsBuilder, TypedFunc, WasmParams, WasmResults,
 };
 
-use crate::{
+use super::{
     NAME,
     abi::{self, ABI_VERSION, Outbox},
 };
@@ -381,5 +381,5 @@ fn trap(what: &str, error: &wasmtime::Error) -> PluginError {
 }
 
 fn config_error(message: impl Into<String>) -> PluginError {
-    PluginError::config(crate::NAME, message.into())
+    PluginError::config(super::NAME, message.into())
 }

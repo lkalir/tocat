@@ -9,4 +9,4 @@ repository = "https://github.com/lkalir/tocat"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-tocat-sdk = { path = "../../crates/tocat-sdk" }
+tocat-wasm-sdk = { path = "../../crates/tocat-wasm-sdk" }

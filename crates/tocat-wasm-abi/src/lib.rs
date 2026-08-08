@@ -3,7 +3,7 @@
 //! One definition of the wire format, used by everything that touches it:
 //!
 //! - the host reads an [`Outbox`] out of guest memory after every call
-//! - `tocat-sdk` writes one, on behalf of a Rust guest
+//! - `tocat-wasm-sdk` writes one, on behalf of a Rust guest
 //! - `sdk/wasm/include/tocat/abi.h` is generated from this crate, so a C or C++
 //!   guest sees the same constants and the same struct rather than a
 //!   hand-copied transcription of them
@@ -11,7 +11,7 @@
 //! Regenerate that header with:
 //!
 //! ```console
-//! $ cargo run -p tocat-abi --features generate --bin tocat-abi-header
+//! $ cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
 //! ```
 //!
 //! and check it is current with `--check`, which is what CI should run.

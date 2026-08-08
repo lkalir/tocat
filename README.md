@@ -4,6 +4,11 @@ A socat-inspired relay built on tokio. tocat connects two endpoints (sockets, fi
 directions. Unlike socat, connections can be described in a TOML config file with editor completion and validation, and the bytes in flight can be
 passed through a pipeline of plugins.
 
+## AI Disclaimer
+
+This project (especially the documentation) began as slop, but slop it shall not remain forever (hoepfully). This discalimer will be amended once I
+feel enough of the system has been "reformed".
+
 ## Status
 
 tocat is in early days and has a long way to go before reaching parity with socat. The currently supported sources and sinks are
@@ -63,8 +68,8 @@ you want back.
 ```console
 # Only tee
 $ cargo install --path crates/tocat-cli --no-default-features --features tee
-# tee and rate
-$ cargo install --path crates/tocat-cli --no-default-features --features tee,rate
+# All plugins except WASM
+$ cargo install --path crates/tocat-cli --no-default-features --features all-plugins-no-wasm
 # No plugins at all
 $ cargo install --path crates/tocat-cli --no-default-features
 ```

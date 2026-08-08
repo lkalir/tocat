@@ -79,27 +79,27 @@
 //! would open them, and the ids would have to be written back before the first
 //! chunk. Until then a guest that wants to record something logs it.
 
-// The wire format lives in `tocat-abi`, which is also what the C header is
-// generated from and what a Rust guest writes through `tocat-sdk`. The host
-// reading its own copy of these numbers is how the three ends of one ABI drift
-// apart, so it reads theirs.
-pub use tocat_abi::{
+// The wire format lives in `tocat-wasm-abi`, which is also what the C header is
+// generated from and what a Rust guest writes through `tocat-wasm-sdk`. The
+// host reading its own copy of these numbers is how the three ends of one ABI
+// drift apart, so it reads theirs.
+use tocat_api::{PluginError, Result};
+pub use tocat_wasm_abi::{
     TOCAT_EMIT_BUFFERED as EMIT_BUFFERED, TOCAT_EMIT_PASSTHROUGH as EMIT_PASSTHROUGH,
     TOCAT_EMIT_PENDING as EMIT_DROP, TOCAT_FLAG_ERROR as FLAG_ERROR, TOCAT_FLAG_HALT as FLAG_HALT,
     TOCAT_FLAG_PACE as FLAG_PACE, TOCAT_FLAG_REARM as FLAG_REARM,
 };
-use tocat_api::{PluginError, Result};
 
-use crate::NAME;
+use super::NAME;
 
 /// Bumped for any change to the layout below. A guest reporting a different
 /// version is rejected at startup rather than being read as garbage.
-pub const ABI_VERSION: i32 = tocat_abi::TOCAT_ABI_VERSION as i32;
+pub const ABI_VERSION: i32 = tocat_wasm_abi::TOCAT_ABI_VERSION as i32;
 
-pub const OUTBOX_LEN: usize = tocat_abi::TOCAT_OUTBOX_LEN as usize;
+pub const OUTBOX_LEN: usize = tocat_wasm_abi::TOCAT_OUTBOX_LEN as usize;
 
 /// Bytes per record in the guest's log array.
-pub const LOG_RECORD_LEN: u32 = tocat_abi::TOCAT_LOG_RECORD_LEN;
+pub const LOG_RECORD_LEN: u32 = tocat_wasm_abi::TOCAT_LOG_RECORD_LEN;
 
 /// One decoded outbox. Every field is an offset and a length in the guest's
 /// memory; nothing is copied until the host applies it.
@@ -211,5 +211,5 @@ pub fn bounds(memory: &[u8], span: Span, limit: u32) -> Result<Vec<usize>> {
 /// Guest log levels. Anything unrecognised, including a guest that never set
 /// the field, is info: a record it bothered to queue is still worth seeing.
 pub fn log_level(raw: u32) -> tocat_api::LogLevel {
-    tocat_abi::Level::from_u32(raw)
+    tocat_wasm_abi::Level::from_u32(raw)
 }

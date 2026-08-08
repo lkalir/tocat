@@ -30,7 +30,7 @@ use tocat_api::{
     BuildCtx, ByteSize, Ctx, Execution, Plugin, PluginError, PluginFactory, Result, Stage,
 };
 
-use crate::engine::Guest;
+use engine::Guest;
 
 pub const NAME: &str = "wasm";
 

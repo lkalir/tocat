@@ -10,7 +10,7 @@
 
 #![no_std]
 
-use tocat_sdk::{Context, Guest, export_guest};
+use tocat_wasm_sdk::{Context, Guest, export_guest};
 
 /// The most a chunk may be, which has to be at or above the relay's copy
 /// buffer (256 KiB by default) or the relay has to be run with a matching

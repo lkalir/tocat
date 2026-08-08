@@ -26,8 +26,8 @@ use serde_json::{Map, Value};
 /// The same type a guest writes into its outbox, since a level that crossed
 /// the WebAssembly boundary and a level a native plugin passed to
 /// [`Ctx::log`] are the same thing.
-pub use tocat_abi::Level as LogLevel;
-pub use tocat_abi::*;
+pub use tocat_wasm_abi::Level as LogLevel;
+pub use tocat_wasm_abi::*;
 
 use crate::{
     Direction,

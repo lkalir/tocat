@@ -33,7 +33,10 @@
             "clippy"
             "rustfmt"
           ];
-          targets = [ "wasm32-unknown-unknown" ];
+          targets = [
+            "x86_64-unknown-linux-musl"
+            "wasm32-unknown-unknown"
+          ];
         };
 
         # Secondary toolchain: Nightly
@@ -78,7 +81,6 @@
         libDeps =
           with pkgs;
           [
-            openssl # native-tls / reqwest default backend; drop if you use rustls
             llvmPackages.clang-unwrapped
             llvmPackages.lld
             gnumake
@@ -128,7 +130,9 @@
 
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           RUST_BACKTRACE = "1";
-          OPENSSL_NO_VENDOR = "1";
+
+          CLANG = "clang-unwrapped";
+          CLANGXX = "clang++-unwrapped";
         };
 
         packages.default = rustPlatform.buildRustPackage {
@@ -143,12 +147,35 @@
           doCheck = false;
         };
 
+        packages.wasm-sdk = pkgs.stdenv.mkDerivation {
+          pname = "tocat-wasm-sdk";
+          version = "0.1.0";
+          src = ./sdk/wasm;
+
+          nativeBuildInputs = [ pkgs.cmake ];
+          cmakeFlags = [ "-DTOCAT_WASM_BUILD_EXAMPLES=OFF" ];
+        };
+
+        check.wasm-examples = pkgs.stdenv.mkDerivation {
+          name = "tocat-wasm-examples";
+          src = ./sdk/wasm;
+
+          nativeBuildInputs = with pkgs; [
+            cmake
+            llvmPackages.clang-unwrapped
+            lld
+          ];
+
+          cmakeFlags = [
+            "-DTOCAT_WASM_BUILD_EXAMPLES=ON"
+            "-DCMAKE_TOOLCHAIN_FILE=${./sdk/wasm/cmake/wasm32-toolchain.cmake}"
+          ];
+
+          installPhase = "mkdir -p $out && cp examples/*.wasm $out/";
+        };
+
         formatter = pkgs.nixpkgs-fmt;
 
-        shellHook = ''
-          export CLANG=clang-unwrapped
-          export CLANGXX=clang++-unwrapped
-        '';
       }
 
     );

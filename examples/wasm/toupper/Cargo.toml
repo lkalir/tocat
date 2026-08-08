@@ -9,4 +9,4 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-tocat-sdk = { workspace = true }
+tocat-wasm-sdk = { workspace = true }

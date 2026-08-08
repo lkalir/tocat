@@ -1,0 +1,12 @@
+[package]
+name = "tocat-wasm-abi"
+version.workspace = true
+edition.workspace = true
+description = "Wire format for the tocat WebAssembly guest ABI"
+repository.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+# Only for the header generator, which is a binary rather than part of the
+# library: the ABI itself is no_std with no dependencies at all.
+cbindgen = { version = "0.29" }

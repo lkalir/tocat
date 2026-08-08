@@ -34,7 +34,7 @@ documentation makes, it is a property the loader enforces: a module that imports
 It does not need any of them. A stage decides what to forward and queues everything else for the host to perform, so the things a guest would reach for
 are already messages rather than calls: it can forward bytes, frame them into units, log, ask to wait, ask to stop, and ask for its tick schedule to be
 restarted. The one capability the ABI does not carry yet is side channels, so a guest that wants to record something logs it. See
-[The guest ABI](../../api/wasm-abi.md) for how to write one, `crates/tocat-sdk` for writing one in Rust, and `sdk/wasm/` for a C and C++ SDK. Working guests for all three are in the repository.
+[The guest ABI](../../api/wasm-abi.md) for how to write one, `crates/tocat-wasm-sdk` for writing one in Rust, and `sdk/wasm/` for a C and C++ SDK. Working guests for all three are in the repository.
 
 Two consequences worth stating plainly. A guest cannot exfiltrate the payload, because it has nowhere to put it. And a guest cannot be a
 [host plugin](../../api/host-plugins.md): spawning is a host capability by construction, so a subprocess stage will always be native.

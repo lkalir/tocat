@@ -1,8 +1,8 @@
 //! Generates the C view of the ABI from the Rust one.
 //!
-//!     cargo run -p tocat-abi --features generate --bin tocat-abi-header
-//!     cargo run -p tocat-abi --features generate --bin tocat-abi-header --
-//! --check
+//!     cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
+//!     cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
+//! -- --check
 //!
 //! `--check` writes nothing and exits non-zero when the checked-in header is
 //! stale, which is what CI should run: the header is committed so that a C
@@ -79,7 +79,7 @@ fn main() -> ExitCode {
         Ok(current) if current == generated => ExitCode::SUCCESS,
         Ok(_) => {
             eprintln!(
-                "{} is stale. Regenerate it with:\n    cargo run -p tocat-abi \
+                "{} is stale. Regenerate it with:\n    cargo run -p tocat-wasm-abi \
                  --features generate --bin tocat-abi-header",
                 path.display()
             );

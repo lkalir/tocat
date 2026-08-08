@@ -1842,23 +1842,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tocat-abi"
-version = "0.1.0"
-dependencies = [
- "cbindgen",
-]
-
-[[package]]
-name = "tocat-api"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-abi",
-]
-
-[[package]]
-name = "tocat-cli"
+name = "tocat"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1880,110 +1864,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "tocat-plugin-block"
+name = "tocat-api"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-compress"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
- "zstd",
-]
-
-[[package]]
-name = "tocat-plugin-limit"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-process"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-rate"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-tee"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-throttle"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-timeout"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-api",
-]
-
-[[package]]
-name = "tocat-plugin-wasm"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tocat-abi",
- "tocat-api",
- "wasmtime",
+ "tocat-wasm-abi",
 ]
 
 [[package]]
 name = "tocat-plugins"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tocat-api",
- "tocat-plugin-block",
- "tocat-plugin-compress",
- "tocat-plugin-limit",
- "tocat-plugin-process",
- "tocat-plugin-rate",
- "tocat-plugin-tee",
- "tocat-plugin-throttle",
- "tocat-plugin-timeout",
- "tocat-plugin-wasm",
+ "tocat-wasm-abi",
+ "wasmtime",
+ "zstd",
 ]
 
 [[package]]
-name = "tocat-sdk"
+name = "tocat-wasm-abi"
 version = "0.1.0"
 dependencies = [
- "tocat-abi",
+ "cbindgen",
+]
+
+[[package]]
+name = "tocat-wasm-sdk"
+version = "0.1.0"
+dependencies = [
+ "tocat-wasm-abi",
 ]
 
 [[package]]

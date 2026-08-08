@@ -9,7 +9,7 @@
 //! ```ignore
 //! #![no_std]
 //!
-//! use tocat_sdk::{Context, Guest, export_guest};
+//! use tocat_wasm_sdk::{Context, Guest, export_guest};
 //!
 //! pub struct Upper {
 //!     out: [u8; 256 * 1024],
@@ -62,8 +62,8 @@
 
 use core::time::Duration;
 
-pub use tocat_abi::{Emit, Level, LogRecord, Outbox, TOCAT_ABI_VERSION};
-use tocat_abi::{TOCAT_FLAG_ERROR, TOCAT_FLAG_HALT, TOCAT_FLAG_PACE, TOCAT_FLAG_REARM};
+pub use tocat_wasm_abi::{Emit, Level, LogRecord, Outbox, TOCAT_ABI_VERSION};
+use tocat_wasm_abi::{TOCAT_FLAG_ERROR, TOCAT_FLAG_HALT, TOCAT_FLAG_PACE, TOCAT_FLAG_REARM};
 
 /// How many log records one call may queue. Beyond this they are dropped:
 /// the array lives in the guest, and a stage that wants to say twenty things

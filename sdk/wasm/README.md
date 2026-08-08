@@ -13,15 +13,15 @@ $ tocat - 'wasm,module=build/wasm/examples/toupper.wasm' tcp:localhost:9000
 `clang` is the only requirement, and any clang can target wasm32. Nothing here needs a wasi-sdk, because a guest imports nothing and so has no WASI to
 link against.
 
-| Path                        | Is                                                                                       |
-|-----------------------------|--------------------------------------------------------------------------------------------|
-| `include/tocat/abi.h`       | Generated from `crates/tocat-abi`: the outbox struct and the wire constants              |
-| `include/tocat/tocat.h`     | The exports that never vary, the arena, and helpers for the rest                         |
-| `include/tocat/tocat.hpp`   | The same ABI for C++: a guest is a type, and one macro generates its exports             |
-| `cmake/TocatWasmGuest.cmake`| `tocat_add_wasm_guest()`, which is the whole build interface                             |
-| `cmake/wasm32-toolchain.cmake` | Targets wasm32 with clang                                                             |
-| `examples/toupper.c`        | The smallest useful guest: one transform per chunk, no state, no options                 |
-| `examples/lines.cpp`        | Holding bytes across calls, emitting several units, options, end of stream, and a tick   |
+| Path                           | Is                                                                                     |
+|--------------------------------|----------------------------------------------------------------------------------------|
+| `include/tocat/abi.h`          | Generated from `crates/tocat-wasm-abi`: the outbox struct and the wire constants       |
+| `include/tocat/tocat.h`        | The exports that never vary, the arena, and helpers for the rest                       |
+| `include/tocat/tocat.hpp`      | The same ABI for C++: a guest is a type, and one macro generates its exports           |
+| `cmake/TocatWasmGuest.cmake`   | `tocat_add_wasm_guest()`, which is the whole build interface                           |
+| `cmake/wasm32-toolchain.cmake` | Targets wasm32 with clang                                                              |
+| `examples/toupper.c`           | The smallest useful guest: one transform per chunk, no state, no options               |
+| `examples/lines.cpp`           | Holding bytes across calls, emitting several units, options, end of stream, and a tick |
 
 ## Installing it
 
@@ -58,12 +58,12 @@ without a wasm32 toolchain rather than producing a native binary nobody asked fo
 
 ## Where the ABI comes from
 
-`include/tocat/abi.h` is generated from `crates/tocat-abi`, which is also what the relay decodes an outbox with and what a Rust guest writes one
+`include/tocat/abi.h` is generated from `crates/tocat-wasm-abi`, which is also what the relay decodes an outbox with and what a Rust guest writes one
 through. It is committed so that a C guest needs no Rust toolchain to build, and regenerated with:
 
 ```console
-$ cargo run -p tocat-abi --features generate --bin tocat-abi-header
-$ cargo run -p tocat-abi --features generate --bin tocat-abi-header -- --check
+$ cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
+$ cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header -- --check
 ```
 
 `--check` writes nothing and fails when the committed header is stale, which is the thing worth running in CI: a generated file that nobody checks is a

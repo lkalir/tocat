@@ -7,28 +7,12 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-tocat-api = { path = "../tocat-api" }
-tocat-plugin-block = { path = "../plugins/tocat-plugin-block", optional = true }
-tocat-plugin-compress = {
-  path = "../plugins/tocat-plugin-compress",
-  optional = true
-}
-tocat-plugin-limit = { path = "../plugins/tocat-plugin-limit", optional = true }
-tocat-plugin-process = {
-  path = "../plugins/tocat-plugin-process/",
-  optional = true
-}
-tocat-plugin-rate = { path = "../plugins/tocat-plugin-rate", optional = true }
-tocat-plugin-tee = { path = "../plugins/tocat-plugin-tee", optional = true }
-tocat-plugin-throttle = {
-  path = "../plugins/tocat-plugin-throttle",
-  optional = true
-}
-tocat-plugin-timeout = {
-  path = "../plugins/tocat-plugin-timeout",
-  optional = true
-}
-tocat-plugin-wasm = { path = "../plugins/tocat-plugin-wasm", optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
+tocat-api = { path = "../tocat-api", version = "0.1.0" }
+tocat-wasm-abi = { workspace = true, optional = true }
+wasmtime = { workspace = true, optional = true }
+zstd = { version = "0.13.3", optional = true }
 
 [features]
 default = [
@@ -42,12 +26,12 @@ default = [
   "timeout",
   "wasm"
 ]
-block = ["dep:tocat-plugin-block"]
-compress = ["dep:tocat-plugin-compress"]
-limit = ["dep:tocat-plugin-limit"]
-process = ["dep:tocat-plugin-process"]
-rate = ["dep:tocat-plugin-rate"]
-tee = ["dep:tocat-plugin-tee"]
-throttle = ["dep:tocat-plugin-throttle"]
-timeout = ["dep:tocat-plugin-timeout"]
-wasm = ["dep:tocat-plugin-wasm"]
+block = []
+compress = ["dep:zstd"]
+limit = []
+process = []
+rate = []
+tee = []
+throttle = []
+timeout = []
+wasm = ["dep:serde_json", "dep:tocat-wasm-abi", "dep:wasmtime"]
