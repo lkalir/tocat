@@ -2,7 +2,9 @@
 name = "tocat-wasm-shell"
 version.workspace = true
 edition.workspace = true
-description = "tocat plugin debug tool"
+rust-version.workspace = true
+description = "REPL for poking at a tocat WebAssembly guest without a relay"
+readme = "README.md"
 repository.workspace = true
 license.workspace = true
 

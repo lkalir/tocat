@@ -2,14 +2,18 @@
 name = "tocat-plugins"
 version.workspace = true
 edition.workspace = true
-description = "Built-in tocat plugins"
+rust-version.workspace = true
+description = "The plugins compiled into tocat, a socat-inspired relay"
+readme = "README.md"
 repository.workspace = true
 license.workspace = true
+keywords = ["plugin", "proxy", "relay", "tocat", "wasm"]
+categories = ["network-programming"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
-tocat-api = { path = "../tocat-api", version = "0.1.0" }
+tocat-api = { workspace = true }
 tocat-wasm-abi = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 zstd = { version = "0.13.3", optional = true }

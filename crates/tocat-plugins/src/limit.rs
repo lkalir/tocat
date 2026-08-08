@@ -97,12 +97,6 @@ pub struct Limit {
 }
 
 impl Limit {
-    /// Bytes passed on so far.
-    #[must_use]
-    pub fn seen(&self) -> u64 {
-        self.seen
-    }
-
     /// Announce the end. Reports where the transfer actually stopped rather
     /// than the configured limit, since under `overshoot` they differ.
     fn stop(&mut self, ctx: &mut Ctx<'_>) {

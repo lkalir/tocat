@@ -12,6 +12,7 @@
 
   outputs =
     {
+      self,
       nixpkgs,
       rust-overlay,
       flake-utils,
@@ -71,6 +72,51 @@
           rustc = rustToolchain;
         };
 
+        version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
+
+        # Only what cargo reads. Editing the book, the C SDK, or the schema then does not invalidate the binary.
+        rustSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./crates
+          ];
+        };
+
+        # One workspace member, not the workspace: without -p this builds tocat-wasm-shell too.
+        workspaceMember =
+          {
+            pname,
+            description,
+            mainProgram ? pname,
+          }:
+          rustPlatform.buildRustPackage {
+            inherit pname version;
+            src = rustSrc;
+            cargoLock.lockFile = ./Cargo.lock;
+
+            cargoBuildFlags = [
+              "-p"
+              pname
+            ];
+
+            nativeBuildInputs = nativeDeps;
+            buildInputs = libDeps;
+
+            doCheck = false;
+
+            meta = {
+              inherit description mainProgram;
+              homepage = "https://github.com/lkalir/tocat";
+              license = with pkgs.lib.licenses; [
+                mit
+                # Everything a guest author wants
+                asl20
+              ];
+            };
+          };
+
         # Build-time tools that -sys crates shell out to.
         nativeDeps = with pkgs; [
           pkg-config # so openssl-sys et al. can locate libraries
@@ -123,6 +169,11 @@
             hyperfine
             binaryen
             wasm-tools
+
+            # markdown
+            python3Packages.grip
+            marksman
+            dprint
           ];
 
           # tokio-console requires this cfg across the whole build graph.
@@ -135,28 +186,47 @@
           CLANGXX = "clang++-unwrapped";
         };
 
-        packages.default = rustPlatform.buildRustPackage {
+        packages.default = self.packages.${system}.tocat;
+
+        packages.tocat = workspaceMember {
           pname = "tocat";
-          version = "0.1.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
+          description = "A socat-inspired relay with a config file and a plugin pipeline";
+        };
 
-          nativeBuildInputs = nativeDeps;
-          buildInputs = libDeps;
-
-          doCheck = false;
+        packages.wasm-shell = workspaceMember {
+          pname = "tocat-wasm-shell";
+          description = "REPL for poking at a tocat WASM guest without a relay";
+          mainProgram = "tocat-wasm-shell";
         };
 
         packages.wasm-sdk = pkgs.stdenv.mkDerivation {
           pname = "tocat-wasm-sdk";
-          version = "0.1.0";
+          inherit version;
           src = ./sdk/wasm;
 
           nativeBuildInputs = [ pkgs.cmake ];
           cmakeFlags = [ "-DTOCAT_WASM_BUILD_EXAMPLES=OFF" ];
+
+          meta = {
+            description = "Guest SDK for tocat WASM plugins, for C and C++";
+            homepage = "https://github.com/lkalir/tocat";
+            license = with pkgs.lib.licenses; [
+              mit
+              asl20
+            ];
+          };
         };
 
-        check.wasm-examples = pkgs.stdenv.mkDerivation {
+        # Everything a guest author wants
+        packages.wasm-sdk-full = pkgs.symlinkJoin {
+          name = "tocat-wasm-sdk-full-${version}";
+          paths = with self.packages.${system}; [
+            wasm-sdk
+            wasm-shell
+          ];
+        };
+
+        checks.wasm-examples = pkgs.stdenv.mkDerivation {
           name = "tocat-wasm-examples";
           src = ./sdk/wasm;
 

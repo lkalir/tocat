@@ -327,12 +327,6 @@ pub struct Rate {
 }
 
 impl Rate {
-    /// Bytes seen on this path so far.
-    #[must_use]
-    pub fn total(&self) -> u64 {
-        self.total
-    }
-
     /// Emit one periodic sample and start a new window.
     fn sample(&mut self, ctx: &mut Ctx<'_>, now: Instant) {
         let started = self.started.unwrap_or(now);

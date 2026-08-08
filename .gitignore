@@ -4,6 +4,7 @@
 # Nix
 .direnv/
 .envrc
+result
 
 # Test config files
 tocat.toml

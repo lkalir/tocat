@@ -13,8 +13,10 @@ exclude = ["examples/"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.94.1"
 repository = "https://github.com/lkalir/tocat"
 license = "MIT OR Apache-2.0"
+keywords = ["netcat", "proxy", "relay", "socat", "tcp"]
 
 [workspace.dependencies]
 anyhow = "1.0.104"
@@ -24,3 +26,8 @@ serde_json = "1.0.151"
 tocat-api = { path = "crates/tocat-api", version = "0.1.0" }
 tocat-wasm-abi = { path = "crates/tocat-wasm-abi", version = "0.1.0" }
 wasmtime = "47.0.3"
+
+[workspace.dependencies.tocat-plugins]
+path = "crates/tocat-plugins"
+version = "0.1.0"
+default-features = false

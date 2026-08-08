@@ -1,9 +1,12 @@
 # Testing a stage
 
-Because a stage is synchronous and reaches nothing outside itself, a test is a plain unit test: build it, feed it chunks, assert on what came out and
-on what it asked for. No runtime, no sockets, no temporary files. Every plugin in the tree is tested this way.
+Because a stage is synchronous and reaches nothing outside itself, a test is a
+plain unit test: build it, feed it chunks, assert on what came out and on what
+it asked for. No runtime, no sockets, no temporary files. Every plugin in the
+tree is tested this way.
 
-Two small doubles are all it takes. A `HostBuilder` to hand out channel ids at build time:
+Two small doubles are all it takes. A `HostBuilder` to hand out channel ids at
+build time:
 
 ```rust,ignore
 struct CountingHost(u32);
@@ -17,8 +20,9 @@ impl HostBuilder for CountingHost {
 }
 ```
 
-and an `EffectSink` that records whatever the stage asks for. Only `write` and `log` are required; `pace` and `halt` default to doing nothing, so
-implement them when the stage under test uses them.
+and an `EffectSink` that records whatever the stage asks for. Only `write` and
+`log` are required; `pace` and `halt` default to doing nothing, so implement
+them when the stage under test uses them.
 
 ```rust,ignore
 #[derive(Default)]
@@ -41,7 +45,8 @@ let mut ctx = BuildCtx::new("tee", &map, &meta, stage, &mut host);
 let mut plugin = match TeeFactory.build(&mut ctx)? { Stage::Filter(p) => p, _ => unreachable!() };
 ```
 
-Driving it means constructing an `Emission` and a `Ctx` around each chunk, then reading the emission back:
+Driving it means constructing an `Emission` and a `Ctx` around each chunk, then
+reading the emission back:
 
 ```rust,ignore
 let mut emission = Emission::new();
@@ -55,16 +60,23 @@ assert_eq!(emission.bytes(), b"");
 assert_eq!(emission.bounds(), &[] as &[usize]);
 ```
 
-`Emission` exposes exactly what the host reads: `bytes()` is everything emitted concatenated, `bounds()` is the framing (empty means one unit),
-`emit()` is what the stage decided (`Pending`, `Passthrough` or `Buffered`), and `rearm_requested()` says whether it asked for its schedule to be
-restarted. `reset()` readies it for the next call while keeping the allocations, which is what the host does between chunks.
+`Emission` exposes exactly what the host reads: `bytes()` is everything emitted
+concatenated, `bounds()` is the framing (empty means one unit), `emit()` is what
+the stage decided (`Pending`, `Passthrough` or `Buffered`), and
+`rearm_requested()` says whether it asked for its schedule to be restarted.
+`reset()` readies it for the next call while keeping the allocations, which is
+what the host does between chunks.
 
 Three assertions are worth making by habit:
 
-- **A pure observer must never materialise the payload.** `emit() == Passthrough` and `bytes().is_empty()` together are what prove `tee` and `rate` are
-  free.
-- **Framing is what you meant.** Assert on `bounds()`, not just on the concatenated bytes, or a stage that forgot its boundaries looks correct.
-- **The end matters.** Call `on_eof` and assert on what it flushed, especially for anything holding bytes or writing an epilogue.
+- **A pure observer must never materialise the payload.**
+  `emit() == Passthrough` and `bytes().is_empty()` together are what prove `tee`
+  and `rate` are free.
+- **Framing is what you meant.** Assert on `bounds()`, not just on the
+  concatenated bytes, or a stage that forgot its boundaries looks correct.
+- **The end matters.** Call `on_eof` and assert on what it flushed, especially
+  for anything holding bytes or writing an epilogue.
 
-Ticks are just as direct: call `on_tick` with a `Ctx` whose input is empty, and check both what was emitted and `rearm_requested()`. Nothing has to
-wait for a real interval to pass.
+Ticks are just as direct: call `on_tick` with a `Ctx` whose input is empty, and
+check both what was emitted and `rearm_requested()`. Nothing has to wait for a
+real interval to pass.

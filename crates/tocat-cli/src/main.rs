@@ -45,6 +45,9 @@ use crate::{progress::Progress, relay::Relay};
 /// on that read forever and the process becomes unkillable by signal.
 const TEARDOWN_GRACE: Duration = Duration::from_millis(250);
 
+#[cfg(feature = "schema")]
+const SCHEMA: &str = include_str!("../tocat.schema.json");
+
 fn main() -> anyhow::Result<ExitCode> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -68,6 +71,14 @@ async fn start() -> anyhow::Result<ExitCode> {
             println!("{:<12} {}", factory.name(), factory.description());
         }
         return Ok(ExitCode::SUCCESS);
+    }
+
+    #[cfg(feature = "schema")]
+    {
+        if cli.dump_schema {
+            println!("{SCHEMA}");
+            return Ok(ExitCode::SUCCESS);
+        }
     }
 
     // Setup logging

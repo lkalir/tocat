@@ -77,6 +77,10 @@ pub struct Cli {
     #[arg(long, help = "List the plugins compiled into this binary and exit.")]
     pub list_plugins: bool,
 
+    #[cfg(feature = "schema")]
+    #[arg(long, help = "Print the config file JSON schema to stdout and exit.")]
+    pub dump_schema: bool,
+
     #[arg(
         short = 'P',
         long,

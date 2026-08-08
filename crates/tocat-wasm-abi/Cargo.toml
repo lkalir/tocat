@@ -2,9 +2,13 @@
 name = "tocat-wasm-abi"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Wire format for the tocat WebAssembly guest ABI"
+readme = "README.md"
 repository.workspace = true
 license.workspace = true
+keywords = ["abi", "no-std", "plugin", "tocat", "wasm"]
+categories = ["external-ffi-bindings", "no-std", "wasm"]
 
 [dev-dependencies]
 # Only for the header generator, which is a binary rather than part of the

@@ -24,13 +24,12 @@ mod engine;
 
 use std::{path::PathBuf, time::Duration};
 
+use engine::Guest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tocat_api::{
     BuildCtx, ByteSize, Ctx, Execution, Plugin, PluginError, PluginFactory, Result, Stage,
 };
-
-use engine::Guest;
 
 pub const NAME: &str = "wasm";
 

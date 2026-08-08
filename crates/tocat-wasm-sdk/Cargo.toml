@@ -2,9 +2,18 @@
 name = "tocat-wasm-sdk"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 description = "Write tocat WebAssembly plugins in Rust"
+readme = "README.md"
 repository.workspace = true
 license.workspace = true
+keywords = ["no-std", "plugin", "sdk", "tocat", "wasm"]
+categories = ["api-bindings", "no-std", "wasm"]
+
+# A guest is built for wasm32, and the macro's panic handler only exists there,
+# so document what people compile rather than what docs.rs defaults to.
+[package.metadata.docs.rs]
+targets = ["wasm32-unknown-unknown"]
 
 [dependencies]
 tocat-wasm-abi = { workspace = true }

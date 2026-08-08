@@ -120,14 +120,6 @@ pub struct Tee {
     scratch: String,
 }
 
-impl Tee {
-    /// Bytes observed on this path so far.
-    #[must_use]
-    pub fn offset(&self) -> u64 {
-        self.offset
-    }
-}
-
 impl Plugin for Tee {
     fn name(&self) -> &str {
         NAME
@@ -245,19 +237,18 @@ pub fn write_hex_dump(out: &mut String, buf: &[u8], start_offset: u64, width: us
     }
 }
 
-#[must_use]
-pub fn hex_dump(buf: &[u8], start_offset: u64, width: usize) -> String {
-    let mut out = String::new();
-    write_hex_dump(&mut out, buf, start_offset, width);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use tocat_api::{Direction, EffectSink, Emission, Emit, LogLevel, PipelineMeta, StageInfo};
 
     use super::*;
+
+    fn hex_dump(buf: &[u8], start_offset: u64, width: usize) -> String {
+        let mut out = String::new();
+        write_hex_dump(&mut out, buf, start_offset, width);
+        out
+    }
 
     #[derive(Default)]
     struct Recorder(Vec<Vec<u8>>);

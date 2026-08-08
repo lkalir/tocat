@@ -4,11 +4,14 @@
 //! Both kinds implement [`tocat_api::Plugin`] and are looked up through the
 //! same [`Registry`], so the relay cannot tell them apart.
 //!
-//! This crate is a facade. Plugins with no dependencies live here as modules;
-//! plugins that bring their own dependency tree get their own crate and are
-//! re-registered from here. `tocat-cli` must never name an individual plugin
-//! crate. [`register_native`] is the only seam, which is what makes moving a
-//! plugin between the two forms a non-event.
+//! Every plugin is a module here, behind a cargo feature, and a feature enables
+//! both the module and whatever optional dependencies it needs: a build without
+//! `compress` never compiles zstd, and one without `wasm` never compiles
+//! wasmtime. A crate boundary would buy nothing that does not already buy.
+//!
+//! [`register_native`] is the only thing this crate exports. No module can
+//! reach another and the binary cannot reach any of them, which is what lets a
+//! plugin change shape without anything above noticing.
 
 #[cfg(feature = "block")]
 mod block;

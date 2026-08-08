@@ -11,7 +11,7 @@
 //! Regenerate that header with:
 //!
 //! ```console
-//! $ cargo run -p tocat-wasm-abi --features generate --bin tocat-abi-header
+//! $ cargo run -p tocat-wasm-abi --example tocat-abi-header
 //! ```
 //!
 //! and check it is current with `--check`, which is what CI should run.

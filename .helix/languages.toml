@@ -1,3 +1,21 @@
 [[language]]
 name = "rust"
 formatter = { command = "rustfmt-nightly" }
+auto-format = true
+
+[[language]]
+name = "markdown"
+formatter = { command = "dprint", args = ["fmt", "--stdin", "md"] }
+auto-format = true
+rulers = [80]
+
+[[language]]
+name = "json"
+formatter = { command = "dprint", args = ["fmt", "--stdin", "json"] }
+auto-format = true
+rulers = [120]
+
+[[language]]
+name = "toml"
+auto-format = true
+rulers = [120]
