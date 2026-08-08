@@ -36,6 +36,7 @@ $ cargo install --path crates/tocat-cli --no-default-features
 | `tee`          | [`tee`](plugins/tee.md)                                                     |
 | `throttle`     | [`throttle`](plugins/throttle.md)                                           |
 | `timeout`      | [`timeout`](plugins/timeout.md)                                             |
+| `wasm`         | [`wasm`](plugins/wasm.md), and a wasmtime dependency                        |
 | `tokio-console`| A `console-subscriber` layer, for inspecting the runtime with `tokio-console` |
 
 Each plugin that brings its own dependency tree is its own crate under `crates/plugins/`, wired in through the `tocat-plugins` facade. `tocat-cli`
@@ -43,6 +44,18 @@ never names an individual plugin crate.
 
 A binary knows what it was built with, so `tocat --list-plugins` is the authoritative answer for any given install: it prints each plugin and its one
 line description. Naming a plugin the binary does not have is an error at startup, with a suggestion drawn from the ones it does have.
+
+## Building a guest
+
+The [`wasm`](plugins/wasm.md) plugin loads modules rather than building them, so nothing above produces one. `sdk/wasm/` is a CMake package that
+installs the guest ABI header and a `tocat_add_wasm_guest()` function, and builds the example guests with it. Installing it needs no compiler; building
+a guest needs a clang, any clang, since a guest imports nothing and has no WASI to link against.
+
+```console
+$ cmake -S sdk/wasm -B build/wasm \
+        -DCMAKE_TOOLCHAIN_FILE=$PWD/sdk/wasm/cmake/wasm32-toolchain.cmake
+$ cmake --build build/wasm
+```
 
 ## Building this book
 

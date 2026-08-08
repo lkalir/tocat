@@ -23,6 +23,7 @@
   - [throttle](guide/plugins/throttle.md)
   - [block](guide/plugins/block.md)
   - [timeout](guide/plugins/timeout.md)
+  - [wasm](guide/plugins/wasm.md)
 - [Buffers](guide/buffers.md)
 - [Progress](guide/progress.md)
 - [Configuration](guide/configuration.md)
@@ -37,6 +38,7 @@
 - [Ticks and timers](api/ticks.md)
 - [Effects and channels](api/effects.md)
 - [Host plugins](api/host-plugins.md)
+- [The guest ABI](api/wasm-abi.md)
 - [Testing a stage](api/testing.md)
 
 # Design

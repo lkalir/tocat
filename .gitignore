@@ -8,3 +8,7 @@
 # Test config files
 tocat.toml
 .tocat.toml
+
+**/*.wasm
+build/
+.cache/

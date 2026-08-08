@@ -33,6 +33,7 @@
             "clippy"
             "rustfmt"
           ];
+          targets = [ "wasm32-unknown-unknown" ];
         };
 
         # Secondary toolchain: Nightly
@@ -78,11 +79,15 @@
           with pkgs;
           [
             openssl # native-tls / reqwest default backend; drop if you use rustls
+            llvmPackages.clang-unwrapped
+            llvmPackages.lld
+            gnumake
           ]
           ++ lib.optionals stdenv.isDarwin [ libiconv ];
       in
       {
         devShells.default = pkgs.mkShell {
+          hardeningDisable = [ "all" ];
           nativeBuildInputs = [
             rustToolchain
             rustNightlyWrapped
@@ -114,6 +119,8 @@
             tombi
             pv
             hyperfine
+            binaryen
+            wasm-tools
           ];
 
           # tokio-console requires this cfg across the whole build graph.
@@ -137,6 +144,12 @@
         };
 
         formatter = pkgs.nixpkgs-fmt;
+
+        shellHook = ''
+          export CLANG=clang-unwrapped
+          export CLANGXX=clang++-unwrapped
+        '';
       }
+
     );
 }

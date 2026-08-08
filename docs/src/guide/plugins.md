@@ -33,6 +33,7 @@ Run `tocat --list-plugins` to see what your build has, and `--no-plugins` to ign
 | [`compress`](plugins/compress.md) | zstd compress or decompress            | rewritten | detached    | warns                             |
 | [`process`](plugins/process.md)   | Pipe the path through a child process  | rewritten | own process | warns                             |
 | [`timeout`](plugins/timeout.md)   | End the path once it has gone quiet    | untouched | inline      | safe                              |
+| [`wasm`](plugins/wasm.md)         | Run a WebAssembly guest as a stage     | guest's   | detached    | the guest declares, default warns |
 
 "Datagram paths" is what each stage reports about itself, and it is what tocat checks when the destination on that path is a datagram endpoint. The
 default for a stage that says nothing, including any plugin from outside the binary, is that it is not safe.

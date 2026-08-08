@@ -2,10 +2,14 @@
 resolver = "3"
 members = [
   "crates/plugins/*",
+  "crates/tocat-abi",
   "crates/tocat-api",
   "crates/tocat-cli",
-  "crates/tocat-plugins"
+  "crates/tocat-plugins",
+  "crates/tocat-sdk",
+  "crates/tocat-wasm-shell"
 ]
+exclude = ["examples/"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +18,10 @@ repository = "https://github.com/lkalir/tocat"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tocat-abi = { path = "crates/tocat-abi" }
 tocat-api = { path = "crates/tocat-api" }
+wasmtime = "47.0.3"

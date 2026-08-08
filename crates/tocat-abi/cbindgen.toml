@@ -1,0 +1,60 @@
+# Generates sdk/wasm/include/tocat/abi.h from src/lib.rs.
+#
+# What crosses into C is the layout and the wire constants, and nothing else:
+# the Rust-side enums are excluded because C gets the constants their
+# discriminants are made of, and the export-name strings are excluded because
+# they are for a host looking functions up, not for a guest defining them.
+
+language = "C"
+include_guard = "TOCAT_ABI_H"
+no_includes = true
+sys_includes = ["stdint.h"]
+cpp_compat = true
+documentation = true
+documentation_style = "c"
+style = "type"
+line_length = 78
+tab_width = 4
+
+header = """/*
+ * The tocat WebAssembly guest ABI, version 1.
+ *
+ * Generated from crates/tocat-abi by cbindgen. Do not edit: run
+ *
+ *     cargo run -p tocat-abi --features generate --bin tocat-abi-header
+ *
+ * Include <tocat/tocat.h> rather than this file. That one adds the exports,
+ * the arena and the helpers; this one is only the shape of the wire.
+ */"""
+
+[export]
+# cbindgen emits only the types an exported function's signature reaches, and
+# this crate deliberately exports no functions: the guest calls nothing, the
+# host reads a struct. Without naming them here the header comes out with the
+# constants and no `tocat_outbox_t`, which fails in tocat.h rather than here.
+include = [
+  "Outbox",
+  "LogRecord",
+]
+
+exclude = [
+  "Emit",
+  "Level",
+  "MEMORY",
+  "ABI_VERSION",
+  "OUTBOX",
+  "ALLOC",
+  "INIT",
+  "ON_BYTES",
+  "ON_EOF",
+  "ON_TICK",
+  "TICK_INTERVAL_NS",
+  "DATAGRAM_SAFE",
+]
+
+[export.rename]
+"Outbox" = "tocat_outbox_t"
+"LogRecord" = "tocat_log_record_t"
+
+[parse]
+parse_deps = false

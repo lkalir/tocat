@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["toupper"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/lkalir/tocat"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+tocat-sdk = { path = "../../crates/tocat-sdk" }

@@ -1,0 +1,19 @@
+[package]
+name = "tocat-abi"
+version.workspace = true
+description = "Wire format for the tocat WebAssembly guest ABI"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# Only for the header generator, which is a binary rather than part of the
+# library: the ABI itself is no_std with no dependencies at all.
+cbindgen = { version = "0.29", optional = true }
+
+[features]
+generate = ["dep:cbindgen"]
+
+[[bin]]
+name = "tocat-abi-header"
+required-features = ["generate"]

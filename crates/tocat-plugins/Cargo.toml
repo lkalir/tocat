@@ -28,6 +28,7 @@ tocat-plugin-timeout = {
   path = "../plugins/tocat-plugin-timeout",
   optional = true
 }
+tocat-plugin-wasm = { path = "../plugins/tocat-plugin-wasm", optional = true }
 
 [features]
 default = [
@@ -38,7 +39,8 @@ default = [
   "rate",
   "tee",
   "throttle",
-  "timeout"
+  "timeout",
+  "wasm"
 ]
 block = ["dep:tocat-plugin-block"]
 compress = ["dep:tocat-plugin-compress"]
@@ -48,3 +50,4 @@ rate = ["dep:tocat-plugin-rate"]
 tee = ["dep:tocat-plugin-tee"]
 throttle = ["dep:tocat-plugin-throttle"]
 timeout = ["dep:tocat-plugin-timeout"]
+wasm = ["dep:tocat-plugin-wasm"]

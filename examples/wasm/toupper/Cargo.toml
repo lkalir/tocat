@@ -1,0 +1,12 @@
+[package]
+name = "toupper"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tocat-sdk = { workspace = true }

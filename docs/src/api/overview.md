@@ -10,8 +10,10 @@ Three properties follow from that split, and they are the reason for it:
   asserts on both, with no runtime, no sockets and no temporary files. See [Testing a stage](testing.md).
 - **Off the async runtime.** Nothing in a stage awaits, so no stage can stall a reactor thread by accident, and all I/O stays on the host's runtime
   where it can be batched and overlapped with the downstream write.
-- **Portable to a guest.** It is the shape a WASM guest has to take: the guest calls a host import and the host performs the syscall. A future
-  `WasmPlugin` implements `Plugin` like any other and nothing in the relay changes.
+- **Portable to a guest.** It is the shape a WASM guest has to take, and the [`wasm`](../guide/plugins/wasm.md) stage is that: it implements `Plugin`
+  by forwarding each call into a module and applying what comes back, and nothing in the relay knows the difference. Because effects are queued rather
+  than performed, a guest needs no host imports at all, which is what makes "imports nothing" an enforceable rule rather than a wish. See
+  [The guest ABI](wasm-abi.md).
 
 The same split covers time. A stage cannot await and cannot read a clock, so one that needs time rather than traffic to drive it declares a period and
 is called back on it. See [Ticks and timers](ticks.md).

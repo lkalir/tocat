@@ -1,0 +1,13 @@
+[package]
+name = "tocat-wasm-shell"
+version.workspace = true
+edition.workspace = true
+description = "tocat plugin debug tool"
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+rustyline = "18.0.1"
+wasmtime = { workspace = true }

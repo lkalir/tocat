@@ -21,6 +21,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
+/// Severity of a record a stage asked the host to log.
+///
+/// The same type a guest writes into its outbox, since a level that crossed
+/// the WebAssembly boundary and a level a native plugin passed to
+/// [`Ctx::log`] are the same thing.
+pub use tocat_abi::Level as LogLevel;
+pub use tocat_abi::*;
 
 use crate::{
     Direction,
@@ -28,15 +35,6 @@ use crate::{
     error::{PluginError, Result},
     forgiving::Forgiving,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum LogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-}
 
 /// Where the host runs a stage.
 ///
@@ -51,20 +49,6 @@ pub enum Execution {
     #[default]
     Inline,
     Detached,
-}
-
-/// What a stage decided to do with the chunk it was given.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Emit {
-    /// Nothing emitted; the chunk stops here.
-    #[default]
-    Pending,
-    /// Input forwarded verbatim. The host reuses the input slice, copying
-    /// nothing.
-    Passthrough,
-    /// The stage wrote its own bytes into the output buffer, and any framing
-    /// it declared along with them.
-    Buffered,
 }
 
 /// Collects the side effects a plugin asks for during one call.

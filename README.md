@@ -47,7 +47,7 @@ The plugins that ship with tocat are
 - [x] tee - mirror a path's bytes to a file or stderr, verbatim or as a hex dump
 - [x] throttle - artificially constrict bandwidth
 - [x] timeout - end a path that has gone quiet
-- [ ] WASM plugin support
+- [x] WASM plugin support
 
 Many configurations and options present in socat are also currently missing.
 

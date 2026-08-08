@@ -23,8 +23,9 @@ of stream, and the exit status.
 
 - **The trait stays honest.** If it had to cover concurrent, latency-shifted stages, every plugin author would face a contract shaped by a case they do
   not have, and the guarantees the simple case relies on would be weaker.
-- **Capability is structural.** Spawning is a host capability by construction, so a WASM guest can only ever produce `Stage::Filter`. A guest cannot
-  spawn a process because there is nothing in its interface that spawns a process, rather than because it is asked not to.
+- **Capability is structural.** Spawning is a host capability by construction, so a [WASM guest](wasm-abi.md) can only ever be a filter. A guest cannot
+  spawn a process because there is nothing in its interface that spawns a process, rather than because it is asked not to, and the loader refuses a
+  module that imports anything at all.
 - **The host already owns the awkward parts.** Pipe sizing, killing the child when the connection drops, closing stdin so the child flushes, and
   mapping a non-zero exit onto a failed direction are host responsibilities anyway.
 

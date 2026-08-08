@@ -52,6 +52,9 @@ pub fn register_native(registry: &mut Registry) {
     #[cfg(feature = "throttle")]
     registry.register(tocat_plugin_throttle::ThrottleFactory);
 
+    #[cfg(feature = "wasm")]
+    registry.register(tocat_plugin_wasm::WasmFactory);
+
     // So clippy doesn't get mad if no features are enabled
     let _ = registry;
 }

@@ -90,6 +90,9 @@
           "$ref": "#/$defs/plugin-timeout"
         },
         {
+          "$ref": "#/$defs/plugin-wasm"
+        },
+        {
           "$ref": "#/$defs/plugin-other"
         }
       ]
@@ -1171,6 +1174,62 @@
             "drop",
             "exact",
             "overshoot"
+          ]
+        }
+      }
+    },
+    "plugin-wasm": {
+      "title": "wasm",
+      "type": "object",
+      "description": "Run a WebAssembly guest as a stage. The guest imports nothing: no clock, no files, no sockets, no host functions of any kind, and a module that imports so much as WASI is refused when it is loaded. It forwards, rewrites, frames, logs, paces and halts through the same effect queue every native stage uses. The module is compiled once per process; an instance and a linear memory are per direction per connection, so both multiply under fork.",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "module"
+      ],
+      "properties": {
+        "name": {
+          "const": "wasm",
+          "description": "Selects the wasm plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "default": true,
+          "description": "Override the plugin's default placement. A guest call is expensive enough per byte that this defaults to true; false runs it inline on the reading task."
+        },
+        "module": {
+          "type": "string",
+          "description": "Path to the .wasm module. Compiled once per process however many stages and connections name it. Aliases: path, file."
+        },
+        "config": {
+          "type": "object",
+          "description": "Handed to the guest verbatim, as JSON, once. tocat does not look inside: the guest owns its own options, its own defaults and its own error messages, and a guest that rejects one fails at startup carrying its own message."
+        },
+        "fuel": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 100000000,
+          "description": "Instructions one call may cost before the guest is trapped, which fails that direction. Per call rather than per connection, so a long transfer cannot exhaust it. 0 is unmetered, and gives up the guarantee that a guest cannot hang the relay: a stage runs on the copy task and nothing else on that task moves while a guest is inside it."
+        },
+        "memory-max": {
+          "description": "Ceiling on the guest's linear memory. Per instance, and an instance is per direction per connection, so this is the number that multiplies under fork.",
+          "default": "64MiB",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
           ]
         }
       }

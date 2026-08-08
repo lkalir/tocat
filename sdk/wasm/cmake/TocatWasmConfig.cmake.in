@@ -1,0 +1,16 @@
+@PACKAGE_INIT@
+
+# The guest ABI this SDK describes. A guest reports its own from
+# tocat_abi_version(), and tocat refuses one that disagrees, so a consumer can
+# check at configure time instead.
+set(TOCAT_WASM_ABI_VERSION @TOCAT_WASM_ABI_VERSION@)
+
+# Cross-compiling to wasm32 needs a toolchain file, and it cannot be applied
+# by find_package(), which runs too late. Consumers pass this path to a nested
+# configure, or set it themselves before the first project() call.
+set(TOCAT_WASM_TOOLCHAIN_FILE "${CMAKE_CURRENT_LIST_DIR}/wasm32-toolchain.cmake")
+
+include("${CMAKE_CURRENT_LIST_DIR}/TocatWasmTargets.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/TocatWasmGuest.cmake")
+
+check_required_components(TocatWasm)
