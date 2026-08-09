@@ -27,10 +27,15 @@ buffer, which is structurally what socat does. Not `std::io::copy`: its
 kernel-offload specialisations only fire for concrete types, and through a `dyn`
 it falls back to an 8 KiB stack buffer.
 
-A direction with no reader or no writer does not exist here and is skipped,
-which matters: a `file:` source paired with stdio would otherwise park a thread
-on a stdin read whose bytes go to a null sink and hold the relay open waiting
-for an EOF nobody will send.
+A direction with no reader or no writer does not exist and is skipped, on this
+path and on the pumped ones below. It matters more than it sounds. A `file:`
+source paired with stdio would otherwise park on a stdin read whose bytes go to
+a null sink, holding the relay open for an EOF nobody will send; paired with
+`udp:` it would wait for one that cannot arrive at all, since a datagram socket
+has no end of stream. Either way the direction that mattered has already
+finished. Stages declared on a direction that does not exist are warned about
+rather than silently skipped, since they were built and are about to do
+nothing.
 
 ## The pumps
 
@@ -113,3 +118,10 @@ cascades: each stage below sees that output and then its own end of stream. Once
 the chain has drained, the emission is written, staged effects are applied, and
 the sink is flushed and shut down. `limit` reaching its ceiling produces exactly
 this sequence early, which is why it is a successful exit rather than an error.
+
+The run ends when every direction that exists has ended, which is not the same
+as when the interesting one has. Two duplex endpoints usually resolve this by
+themselves, since closing the write half is what tells the peer to hang up, and
+its close is the other direction's end of stream. A datagram sink sends no such
+signal, so a genuinely bidirectional datagram relay ends when both paths do:
+that is what a `timeout` stage on both directions is for.

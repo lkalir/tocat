@@ -52,12 +52,18 @@ boundaries are gone the moment bytes cross the pipe, whatever the child does.
 Four properties of datagram paths ripple through the rest of the system, and are
 worth remembering when adding a feature.
 
-**There is no end of stream.** A datagram source runs until interrupted, so
-anything that only happens at end of stream never happens: a `rate` summary, a
-`compress` epilogue and ratio report, the final short `block`. A feature that
-reports only at the end is a feature that does not exist on such a path, which
-is why `rate` also reports on a cadence. Held FIFOs share this property, so both
-cases need checking anywhere the code assumes end of stream will arrive.
+**There is no end of stream, unless a stage makes one.** A datagram source runs
+until interrupted, so anything that only happens at end of stream never happens:
+a `rate` summary, a `compress` epilogue and ratio report, the final short
+`block`. A feature that reports only at the end is a feature that does not exist
+on such a path, which is why `rate` also reports on a cadence. Held FIFOs share
+this property, so both cases need checking anywhere the code assumes end of
+stream will arrive.
+
+A `timeout` stage halting the path is the one thing that produces one, and its
+halt is a real end of stream: `on_eof` runs and those reports do arrive. That
+also makes it the only way a forked session can end, which is why the endpoint
+grew no timer of its own.
 
 **Splitting is the unsafe operation, not truncating.** This is why `limit` has
 three behaviours for the crossing chunk: `drop` and `overshoot` preserve the
@@ -74,9 +80,41 @@ the wire, which many peers read as a close. The cost is that a genuine
 zero-length datagram is dropped rather than forwarded, which is the rarer case
 and the lesser harm.
 
-## What is not there yet
+## Demultiplexing by sender
 
-`udp-listen` peers with the first sender and ignores everyone else: there is no
-per-sender demultiplexing, and `fork` does not apply to it. Adding it means a
-peer table and per-peer chain instances, since stage state is per path and per
-connection and two senders are two connections.
+Without `fork`, `udp-listen` peers with the first sender and ignores everyone
+else. With `fork` it keeps the socket unconnected and routes by source address:
+one receive loop owns the socket, a map takes each datagram to that sender's
+session, and a sender not in the map becomes a new session with its own dialled
+peer and its own chain instances. Two senders are two connections, because stage
+state is per path and per connection.
+
+The alternative, and what socat does, is a fresh `SO_REUSEADDR` socket per peer
+connected to that address, leaving the kernel to route by most specific match.
+That is one fd per peer, it leans on delivery rules that differ across
+platforms, `SO_REUSEPORT` on the same address load balances instead of
+specialising, and datagrams arriving between the receive and the connect land on
+the wrong socket anyway. One socket and a map has none of those problems and
+costs a task hop and a copy per datagram, which a pipeline was going to pay at
+its first detached boundary regardless.
+
+**Nothing ends a session but a stage.** UDP has no close, so a session lasts as
+long as its task, and the task lasts until both directions finish. The endpoint
+deliberately has no idle option: `timeout` already ends a path that has gone
+quiet, already declares itself datagram safe, and already halts in the way that
+cascades `on_eof`, so a second timer here would have been the same feature under
+a different name. It has to be declared on both paths (`timeout:both`), since a
+forward-only halt leaves the reverse pump reading a sink that may never close,
+and it is the task ending that releases the permit and the map entry.
+
+Two more properties follow from the receive loop serving every sender at once.
+
+**It never blocks on one session.** A session's queue is bounded, and a
+datagram for a queue that is full is dropped rather than made to wait, since
+waiting would stall every other peer. Drops are logged loudly once and at debug
+after, so a flood does not bury the rest of the log.
+
+**The ceiling is enforced there, not at the accept.** `max-connections` is
+checked in the receive loop, because by the time a session reaches the accept
+loop it already exists. Finished sessions are reaped when the ceiling is
+reached, which is the only moment a dead entry is in anybody's way.

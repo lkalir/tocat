@@ -43,7 +43,10 @@ use tracing::{Instrument, debug, error, info, warn};
 
 use crate::{
     buffer::Buffer,
-    endpoint::{Direction, EndpointSpec, EndpointStream, PathGuard, SyncRead, SyncWrite},
+    endpoint::{
+        Direction, EndpointSpec, EndpointStream, PathGuard, ReadHalf, SyncRead, SyncWrite,
+        UdpDemux, WriteHalf,
+    },
     host::{ChannelPlan, Channels},
     progress::{self, Counter, Meter},
     pump::pump,
@@ -53,11 +56,19 @@ use crate::{
 enum Listener {
     Tcp(TcpListener),
     Unix(UnixListener),
+    /// UDP has no accept: a sender is discovered by receiving from it. The
+    /// socket is demultiplexed by source address instead, and each new address
+    /// arrives here as a session to serve.
+    Udp(UdpDemux),
 }
 
 impl Listener {
     /// Start listener.
-    async fn bind(spec: &EndpointSpec) -> anyhow::Result<(Self, Option<PathGuard>)> {
+    async fn bind(
+        spec: &EndpointSpec,
+        buffer: usize,
+        shutdown: Shutdown,
+    ) -> anyhow::Result<(Self, Option<PathGuard>)> {
         match spec {
             EndpointSpec::TcpListen(e) => {
                 let l = e.bind().await?;
@@ -69,12 +80,19 @@ impl Listener {
                 info!(path = %e.path.display(), "listening");
                 Ok((Listener::Unix(l), Some(PathGuard(e.path.clone()))))
             }
+            EndpointSpec::UdpListen(e) => Ok((
+                // The receive loop needs the copy buffer for the same reason
+                // the pump does: one receive is one datagram, and anything
+                // longer than the buffer is truncated by the kernel.
+                Listener::Udp(e.demux(buffer, shutdown).await?),
+                None,
+            )),
             _ => anyhow::bail!("fork is only supported on listening endpoints"),
         }
     }
 
     /// Allow a peer to connect.
-    async fn accept(&self) -> std::io::Result<(EndpointStream, String)> {
+    async fn accept(&mut self) -> std::io::Result<(EndpointStream, String)> {
         match self {
             Listener::Tcp(l) => {
                 let (s, peer) = l.accept().await?;
@@ -88,6 +106,7 @@ impl Listener {
                     .unwrap_or_else(|| "unnamed".to_string());
                 Ok((EndpointStream::unix(s), label))
             }
+            Listener::Udp(d) => d.accept().await,
         }
     }
 }
@@ -359,6 +378,51 @@ impl Relay {
         Ok(())
     }
 
+    /// One direction, if it exists at all.
+    ///
+    /// A direction with no reader or no writer does not exist, which is not the
+    /// same as one that is empty. A `file:` source has nothing to be written
+    /// back to, so the reverse direction is a read from the sink whose bytes
+    /// have nowhere to go, and on a sink that never reaches end of stream, a
+    /// datagram socket or a held FIFO, that read never returns: the direction
+    /// that matters finishes and the relay then waits forever on the one that
+    /// could not have carried anything. [`Self::run_sync`] has always skipped
+    /// these; this is the async path doing the same.
+    async fn pump_direction(
+        &self,
+        reader: Option<ReadHalf>,
+        writer: Option<WriteHalf>,
+        chain: Chain,
+        flow: Flow,
+        shutdown: Shutdown,
+    ) -> anyhow::Result<u64> {
+        let (Some(reader), Some(writer)) = (reader, writer) else {
+            if chain.is_empty() {
+                debug!(?flow, "one way, skipping the direction that does not exist");
+            } else {
+                // Worth saying out loud: the stages were declared, built and
+                // are about to do nothing at all.
+                warn!(?flow, "no such direction, so its stages will not run");
+            }
+
+            return Ok(0);
+        };
+
+        // Counting happens at the endpoint, before any stage sees the bytes.
+        let (reader, counter) = progress::count(self.progress.as_ref(), reader, flow);
+
+        pump(
+            reader,
+            writer,
+            chain,
+            self.channels.clone(),
+            self.buffer,
+            counter,
+            shutdown,
+        )
+        .await
+    }
+
     /// Drive one connection.
     ///
     /// Delegates to a fast-path if there are no plugins. A method rather than a
@@ -372,7 +436,6 @@ impl Relay {
         reverse: Chain,
         mut shutdown: Shutdown,
     ) -> anyhow::Result<()> {
-        let meter = self.progress.clone();
         let buffer = self.buffer;
 
         // Nothing declared and both ends duplex byte streams: hand the whole thing to
@@ -382,7 +445,7 @@ impl Relay {
         // count from, and the split path below is where a read half can be
         // wrapped. Measuring costs the shortcut.
         let (src_stream, sink_stream) =
-            if forward.is_empty() && reverse.is_empty() && meter.is_none() {
+            if forward.is_empty() && reverse.is_empty() && self.progress.is_none() {
                 match (src_stream, sink_stream) {
                     (EndpointStream::Duplex(mut a), EndpointStream::Duplex(mut b)) => {
                         // Dropping the copy is only acceptable because nothing
@@ -412,29 +475,19 @@ impl Relay {
         let (src_read, src_write) = src_stream.into_halves();
         let (sink_read, sink_write) = sink_stream.into_halves();
 
-        // Counting happens at the endpoint, before any stage sees the bytes.
-        let (src_read, forward_count) =
-            progress::count(meter.as_ref(), src_read, Flow::SourceToSink);
-        let (sink_read, reverse_count) =
-            progress::count(meter.as_ref(), sink_read, Flow::SinkToSource);
-
         let (a, b) = tokio::try_join!(
-            pump(
+            self.pump_direction(
                 src_read,
                 sink_write,
                 forward,
-                self.channels.clone(),
-                buffer,
-                forward_count,
+                Flow::SourceToSink,
                 shutdown.clone(),
             ),
-            pump(
+            self.pump_direction(
                 sink_read,
                 src_write,
                 reverse,
-                self.channels.clone(),
-                buffer,
-                reverse_count,
+                Flow::SinkToSource,
                 shutdown.clone(),
             ),
         )?;
@@ -492,7 +545,8 @@ impl Relay {
         let listen = self.listening(peer_dir);
         let max = listen.max_connections();
 
-        let (listener, _socket_guard) = Listener::bind(listen).await?;
+        let (mut listener, _socket_guard) =
+            Listener::bind(listen, self.buffer, shutdown.clone()).await?;
         info!(max = max.get(), "accepting connections");
 
         let permits = Arc::new(Semaphore::new(max.get()));

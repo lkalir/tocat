@@ -42,7 +42,7 @@
 //!
 //! # Shutdown
 //!
-//! A signal is upstream end-of-stream arriving early, not cancellation. Only
+//! A signal is upstream end of stream arriving early, not cancellation. Only
 //! the reads that touch an endpoint watch for it: they stop returning chunks,
 //! and everything after that is the ordinary end-of-stream path, so `on_eof`
 //! runs, whatever a stage was holding is emitted, side channels are applied
@@ -373,9 +373,11 @@ async fn run_process(
                 total
             }
             Upstream::Stream(ReadHalf::Datagram(socket)) => {
-                // No EOF on a datagram source, so stdin is closed only when the
-                // relay stops: until then this needs a filter that streams its
-                // output rather than one that waits for end of stream.
+                // A socket of our own never reaches end of stream, so stdin is
+                // closed only when the relay stops or, on a forked
+                // `udp-listen:` session, when its peer falls silent. Until
+                // then this needs a filter that streams its output rather than
+                // one that waits for end of stream.
                 let mut buf = Buffer::new(buffer);
                 let mut total = 0u64;
 
@@ -384,10 +386,14 @@ async fn run_process(
                         break;
                     }
 
-                    let n = tokio::select! {
+                    let received = tokio::select! {
                         biased;
-                        n = socket.recv(&mut buf) => n?,
+                        received = socket.recv(&mut buf) => received?,
                         () = shutdown.recv() => break,
+                    };
+
+                    let Some(n) = received else {
+                        break;
                     };
 
                     if let Some(counter) = &counter {
@@ -563,18 +569,23 @@ impl Source {
                 counter,
                 shutdown,
             } => {
-                // A datagram socket has no EOF: it stops when the relay does. A
-                // zero-length datagram is legal and distinct from "no more",
-                // which is why the signal is reported as `None` and a received
-                // message never is.
+                // A socket of our own has no EOF: it stops when the relay does.
+                // A forked `udp-listen:` session does end, when its peer falls
+                // silent, and reports that the same way a closed stream would.
+                // A zero-length datagram is legal and distinct from "no more",
+                // which is why the end is `None` and never an empty message.
                 if shutdown.is_triggered() {
                     return Ok(None);
                 }
 
-                let n = tokio::select! {
+                let received = tokio::select! {
                     biased;
-                    n = socket.recv(&mut buf[..]) => n?,
+                    received = socket.recv(&mut buf[..]) => received?,
                     () = shutdown.recv() => return Ok(None),
+                };
+
+                let Some(n) = received else {
+                    return Ok(None);
                 };
 
                 if let Some(counter) = counter {

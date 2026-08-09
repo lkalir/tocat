@@ -47,6 +47,17 @@ never reaches end of stream anyway (a datagram source, a held
 [`pipe`](../endpoints/pipe.md)) this stage is the only thing that will ever end
 it, which is one good reason to reach for it there.
 
+A forked [`udp-listen`](../endpoints/udp.md) is the case where `direction=both`
+is the right answer rather than the unusual one. A session there has no close to
+observe on either side, and a datagram sink has no write half to shut down, so a
+forward-only halt leaves the reverse path pumping forever. It is the session
+task finishing that hands back the connection permit, so without a clock on both
+paths the sessions accumulate until the ceiling is full.
+
+```console
+$ tocat udp-listen:9000,fork 'timeout:both,timeout=30s' tcp:backend:8080
+```
+
 ## Accuracy and cost
 
 The halt lands within a quarter of the timeout of where it was asked for, and

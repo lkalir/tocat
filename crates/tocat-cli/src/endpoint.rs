@@ -64,7 +64,7 @@ pub use self::{
     },
     sys::{PathGuard, size_if_pipe},
     tcp::{Tcp, TcpListen},
-    udp::{Udp, UdpListen},
+    udp::{Udp, UdpDemux, UdpListen},
     unix::{Unix, UnixListen},
 };
 
@@ -166,6 +166,7 @@ impl EndpointSpec {
         match self {
             Self::TcpListen(e) => e.fork,
             Self::UnixListen(e) => e.fork,
+            Self::UdpListen(e) => e.fork,
             _ => false,
         }
     }
@@ -193,6 +194,9 @@ impl EndpointSpec {
                 max_connections, ..
             })
             | Self::UnixListen(UnixListen {
+                max_connections, ..
+            })
+            | Self::UdpListen(UdpListen {
                 max_connections, ..
             }) => max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
             _ => DEFAULT_MAX_CONNECTIONS,

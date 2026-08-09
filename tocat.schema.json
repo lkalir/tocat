@@ -427,7 +427,7 @@
     "udp-listen-endpoint": {
       "title": "udp-listen",
       "type": "object",
-      "description": "Receive datagrams. The first sender becomes the peer for the rest of the run and everyone else is ignored: there is no per-sender demultiplexing, so `fork` does not apply here yet.",
+      "description": "Receive datagrams. Without fork the first sender becomes the peer for the rest of the run and everyone else is ignored. With fork the socket is demultiplexed by source address and every sender gets its own session.",
       "additionalProperties": false,
       "required": [
         "type"
@@ -454,6 +454,17 @@
           "maximum": 65535,
           "default": 8000,
           "description": "Port to bind."
+        },
+        "fork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Serve each sending address separately. Each session gets its own dialled peer and its own plugin instances; only side-channel writers are shared."
+        },
+        "max-connections": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "Maximum number of concurrent sessions. Only applies when fork is true. Datagrams from a new sender past the ceiling are dropped, and a session ends only when a stage stops it, so pair fork with a timeout plugin on both directions."
         },
         "name": {
           "type": "string",
