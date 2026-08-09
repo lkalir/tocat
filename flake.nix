@@ -153,6 +153,9 @@
             cargo-deny
             bacon
             mdbook
+            release-plz
+            cargo-semver-checks
+            git-cliff
 
             # async runtime introspection
             tokio-console
@@ -170,6 +173,8 @@
             hyperfine
             binaryen
             wasm-tools
+            commitlint
+            gh
 
             # markdown
             python3Packages.grip
@@ -185,6 +190,10 @@
 
           CLANG = "clang-unwrapped";
           CLANGXX = "clang++-unwrapped";
+
+          shellHook = ''
+            git config --local core.hooksPath .githooks
+          '';
         };
 
         packages.default = self.packages.${system}.tocat;
