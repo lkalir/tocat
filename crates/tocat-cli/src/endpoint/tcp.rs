@@ -134,9 +134,8 @@ impl TcpListen {
 
     /// Bind and take a single peer.
     pub(super) async fn connect(&self) -> anyhow::Result<Connection> {
-        let (host, port) = self.addr();
         let listener = self.bind().await?;
-        info!("Listening for connection on {host}:{port}");
+        info!(local = %listener.local_addr()?, "listening");
         let (stream, peer) = listener.accept().await?;
         info!("Accepted connection from {peer}");
         Ok(EndpointStream::tcp(stream).into_connection())
