@@ -27,12 +27,12 @@ it watches the payload, after it watches the wire.
 
 ## One clock per path
 
-The window is per path and per connection. The default `direction=both` builds
-one instance each way, each timing out on its own traffic, which is usually not
-what an idle-connection reaper wants: a request/response protocol whose server
-thinks before answering has a quiet reverse path by construction, and ending it
-closes the write half back to the client. Prefer naming a direction, and pick
-the one whose silence actually means the connection is dead.
+The window is per path and per connection, and by default that is the forward
+path. `direction=both` gives each path its own clock, which is usually not what
+an idle-connection reaper wants: a request/response protocol whose server thinks
+before answering has a quiet reverse path by construction, and ending it closes
+the write half back to the client. Pick the one path whose silence actually
+means the connection is dead.
 
 The clock starts when the path opens rather than at the first byte, so a
 connection that is accepted and then says nothing is ended after one window.

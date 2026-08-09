@@ -26,9 +26,9 @@ limit: limit of 10MiB reached at 10MiB
 Anything still arriving after that (a chunk already in flight from a stage
 above) is dropped rather than announcing the limit again.
 
-The default `direction=both` builds one instance per path, each with its own
-budget, so `bytes=1MiB` means a megabyte in each direction rather than a
-megabyte between them. Position matters too: before a `compress` stage it caps
+`bytes=1MiB` is a megabyte from the source. `direction=both` builds one instance
+per path, each with its own budget, so it is a megabyte in each direction rather
+than a megabyte between them. Position matters too: before a `compress` stage it caps
 the payload, after it caps the wire.
 
 ## The crossing chunk

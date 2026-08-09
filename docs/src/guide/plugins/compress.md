@@ -1,11 +1,14 @@
 # `compress` and `decompress` - zstd
 
-Behind the `compress` cargo feature. Compression is asymmetric, so pair the two
-rather than using `both`, which would compress both paths:
+Behind the `compress` cargo feature. Compression is asymmetric, so the two are
+paired, one per path. An entry with no direction is on the forward path, which
+is what the first of these relies on:
 
 ```console
-$ tocat - compress:forward decompress:reverse tcp:relay.internal:9000
+$ tocat - compress decompress:reverse tcp:relay.internal:9000
 ```
+
+`direction=both` would compress the replies too and hand the peer garbage.
 
 The far end of the link runs the mirror image, and the two relays form a
 compressed tunnel over an otherwise plaintext hop.

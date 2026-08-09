@@ -102,8 +102,8 @@
     },
     "plugin-direction": {
       "type": "string",
-      "default": "both",
-      "description": "Which path this entry applies to. 'both' builds two independent instances, one per direction, so per-direction state never leaks across paths. Prefer 'forward'/'reverse' over the 'source'/'sink' aliases: 'sink' means sink-to-source, which reads like the opposite of what it does.",
+      "default": "source-to-sink",
+      "description": "Which path this entry is on. Omitted, it is the forward path, from the source to the sink. 'both' instantiates the plugin once per path, which is two of whatever it counts: a byte budget each way, a timer each way. An asymmetric stage such as compress is never 'both'; its inverse is declared separately with direction = 'reverse'.",
       "enum": [
         "both",
         "forward",

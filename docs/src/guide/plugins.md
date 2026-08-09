@@ -70,7 +70,8 @@ format = "raw-binary"
 
 ## Direction
 
-An entry applies to one path or both. Omitting the direction means both.
+An entry applies to one path or both. Omitting the direction means the forward
+path, from the source to the sink.
 
 | Direction        | Aliases                                          | Meaning                               |
 | ---------------- | ------------------------------------------------ | ------------------------------------- |
@@ -79,7 +80,19 @@ An entry applies to one path or both. Omitting the direction means both.
 | `both`           | `bidi`, `bidirectional`, `duplex`, `all`         | Both paths, as two separate instances |
 
 `both` builds two independent instances, one per path, so per-direction state
-(byte offsets, codec state) never leaks across paths.
+(byte offsets, codec state) never leaks across paths. That also means two of
+whatever the stage counts: `limit,bytes=1MiB,direction=both` lets a megabyte
+past in each direction rather than a megabyte between them, and a ticking stage
+declared that way builds a timer per path per connection. Asking for both is
+therefore worth doing on purpose, which is why it is no longer what you get by
+saying nothing.
+
+An asymmetric stage is not its own inverse, so `both` is wrong for it and the
+pair is written out:
+
+```console
+$ tocat - compress decompress:reverse tcp:relay.internal:9000
+```
 
 The command line is a picture of the wire, read left to right, and the reverse
 path reads it right to left:

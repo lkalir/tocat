@@ -37,6 +37,7 @@ held hostage by it. Where several stages on one path ask to wait, the longest
 request wins rather than the sum: two stages each asking for a second are
 satisfied by one second.
 
-As with [`limit`](limit.md), instances are per path, so `rate=1MiB` is a
-megabyte per second each way rather than between them. To stop a stream rather
+As with [`limit`](limit.md), an instance paces its own path, so `rate=1MiB`
+paces the source and `direction=both` is a megabyte per second each way rather
+than between them. To stop a stream rather
 than slow it, use `limit`; `rate=0` is rejected.

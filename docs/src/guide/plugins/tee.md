@@ -1,11 +1,14 @@
 # `tee` - mirror the stream
 
 Writes a copy of everything on its path to a file or to stderr, without touching
-the payload.
+the payload. An entry with no direction watches the forward path only, so
+capturing both halves of a conversation means `tee:both`, or two entries when
+they should go to different files.
 
 ```console
 $ tocat tcp-listen:8080,fork tee,format=hex tcp:example.com:80
-$ tocat tcp-listen:8080,fork 'tee:forward,file=req.bin' 'tee:reverse,file=resp.bin' tcp:example.com:80
+$ tocat tcp-listen:8080,fork 'tee:both,format=hex' tcp:example.com:80
+$ tocat tcp-listen:8080,fork 'tee,file=req.bin' 'tee:reverse,file=resp.bin' tcp:example.com:80
 ```
 
 | Option              | Description                                                                          |

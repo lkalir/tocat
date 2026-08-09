@@ -44,9 +44,10 @@ the payload, after it digests the wire. Two instances give you both.
 $ tocat file:big.iso 'hash,as=plain' compress 'hash,as=wire' tcp:relay:9000
 ```
 
-Direction works the same way. The default `direction=both` builds one instance
-per path, each with its own hasher, so a duplex connection produces two digests
-rather than one over the concatenation, which would be a number with no meaning.
+Direction works the same way: an entry digests the forward path unless it says
+otherwise. `direction=both` gives each path its own hasher, so a duplex
+connection produces two digests rather than one over the concatenation, which
+would be a number with no meaning.
 
 ## Chunks
 

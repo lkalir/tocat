@@ -102,14 +102,17 @@ impl fmt::Display for Direction {
 
 /// Which path(s) a declared plugin applies to.
 ///
-/// [`DirectionSpec::Both`] instantiates the plugin twice, once per direction,
-/// rather than sharing one instance between them.
+/// The default is [`DirectionSpec::SourceToSink`], so an entry with no
+/// direction is on the forward path only. [`DirectionSpec::Both`] means that,
+/// on request: the plugin is instantiated twice, once per direction, rather
+/// than sharing one instance, and the sink-to-source chain is the mirror of the
+/// declaration order so that wrapping stages nest correctly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DirectionSpec {
+    #[default]
     SourceToSink,
     SinkToSource,
-    #[default]
     Both,
 }
 
