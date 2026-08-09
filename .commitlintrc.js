@@ -12,7 +12,7 @@ module.exports = {
           const { type, scope } = parsed;
           
           // Allow empty scope when type is 'ci'
-          if (type === "ci") {
+          if (type === "ci" || type === "chore") {
             return [true];
           }
           
@@ -35,7 +35,7 @@ module.exports = {
     "scope-enum": [
       2,
       "always",
-      ["api", "plugins", "cli", "wasm-abi", "wasm-sdk", "wasm-shell", "sdk", "docs", "schema", "nix", "ci"],
+      ["api", "plugins", "cli", "endpoints", "wasm-abi", "wasm-sdk", "wasm-shell", "sdk", "docs", "schema", "nix", "ci"],
     ],
     "scope-empty": [0], // Disable built-in rule
     "scope-empty-except-ci": [2, "always"], // Enable custom rule
