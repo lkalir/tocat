@@ -44,6 +44,7 @@ $ cargo install --locked tocat --no-default-features
 | `all-plugins-no-wasm` | Every plugin except `wasm`, which is what wasmtime costs to build             |
 | `block`               | [`block`](plugins/block.md)                                                   |
 | `compress`            | [`compress` and `decompress`](plugins/compress.md), and a zstd dependency     |
+| `hash`                | [`hash`](plugins/hash.md), and the RustCrypto digest crates                   |
 | `limit`               | [`limit`](plugins/limit.md)                                                   |
 | `process`             | [`process`](plugins/process.md)                                               |
 | `rate`                | [`rate`](plugins/rate.md)                                                     |

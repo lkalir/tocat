@@ -19,6 +19,9 @@ mod block;
 #[cfg(feature = "compress")]
 mod compress;
 
+#[cfg(feature = "hash")]
+mod hash;
+
 #[cfg(feature = "limit")]
 mod limit;
 
@@ -63,6 +66,9 @@ pub fn register_native(registry: &mut Registry) {
         registry.register(compress::CompressFactory);
         registry.register(compress::DecompressFactory);
     }
+
+    #[cfg(feature = "hash")]
+    registry.register(hash::HashFactory);
 
     #[cfg(feature = "limit")]
     registry.register(limit::LimitFactory);

@@ -48,6 +48,7 @@ default = ["all-plugins", "schema"]
 all-plugins = [
   "block",
   "compress",
+  "hash",
   "limit",
   "process",
   "rate",
@@ -59,6 +60,7 @@ all-plugins = [
 all-plugins-no-wasm = [
   "block",
   "compress",
+  "hash",
   "limit",
   "process",
   "rate",
@@ -68,6 +70,7 @@ all-plugins-no-wasm = [
 ]
 block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
+hash = ["tocat-plugins/hash"]
 limit = ["tocat-plugins/limit"]
 process = ["tocat-plugins/process"]
 rate = ["tocat-plugins/rate"]

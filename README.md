@@ -48,7 +48,7 @@ The plugins that ship with tocat are
 - [x] compress / decompress - zstd
 - [ ] encrypt / decrypt - symmetric stream encryption/decryption
 - [ ] frame / unframe - apply or strip framing to and from streams
-- [ ] hash - digest stream contents
+- [x] hash - digest stream contents
 - [x] limit - terminate stream after N bytes
 - [ ] pcap - save stream as pcap
 - [x] process - delegate to subprocess using stdin/stdout

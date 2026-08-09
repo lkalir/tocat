@@ -87,6 +87,9 @@
           "$ref": "#/$defs/plugin-block"
         },
         {
+          "$ref": "#/$defs/plugin-hash"
+        },
+        {
           "$ref": "#/$defs/plugin-timeout"
         },
         {
@@ -1231,6 +1234,69 @@
               "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
             }
           ]
+        }
+      }
+    },
+    "plugin-hash": {
+      "title": "hash",
+      "type": "object",
+      "description": "Digest the bytes crossing this stage. The payload is passed through untouched, so this can sit anywhere in a chain, including on a datagram path, and its position decides only what it sees: before a compress stage it digests the payload, after it digests the wire. The window is per path, so with direction 'both' each direction is digested separately.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "hash",
+          "description": "Selects the hash plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and in the bracket at the end of each digest line. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "algorithm": {
+          "description": "Which digest to compute. Spelling is forgiving, so SHA-256 and sha_256 are the same, and sha2 and blake name the common member of their family. md5 and sha1 are for checking against a legacy tool rather than for deciding whether two things are the same. Aliases: algo, alg, hasher.",
+          "default": "sha256",
+          "enum": [
+            "md5",
+            "sha1",
+            "sha224",
+            "sha256",
+            "sha384",
+            "sha512",
+            "sha3-224",
+            "sha3-256",
+            "sha3-384",
+            "sha3-512",
+            "blake2",
+            "blake3"
+          ]
+        },
+        "summary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write one line at end of stream, the digest of everything that crossed the stage. A datagram source and a held pipe never reach end of stream, so nothing is reported there; use chunks instead. Turning this off with chunks off too is rejected at startup."
+        },
+        "chunks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write one line per chunk, each the digest of that chunk alone rather than a running value, for locating where two captures diverge. Costs a finalisation and a write per chunk. Chunk boundaries on a byte stream are arbitrary, so the same bytes need not produce the same lines twice."
+        },
+        "file": {
+          "type": "string",
+          "description": "Where to write. Omitted, '-', 'stderr', '/dev/stderr' or '/dev/fd/2' all mean stderr. stdout is refused: on a stdio endpoint it carries relay payload."
+        },
+        "append": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append to an existing file rather than truncating it."
         }
       }
     },

@@ -30,6 +30,7 @@ ignore the ones in a config file.
 | Plugin                            | Does                                  | Payload   | Runs        | Datagram paths                    |
 | --------------------------------- | ------------------------------------- | --------- | ----------- | --------------------------------- |
 | [`tee`](plugins/tee.md)           | Mirror the bytes to a file or stderr  | untouched | inline      | safe                              |
+| [`hash`](plugins/hash.md)         | Digest what crosses this point        | untouched | inline      | safe                              |
 | [`rate`](plugins/rate.md)         | Report throughput at this point       | untouched | inline      | safe                              |
 | [`throttle`](plugins/throttle.md) | Hold the path to a bandwidth ceiling  | untouched | inline      | safe                              |
 | [`limit`](plugins/limit.md)       | End the transfer after N bytes        | truncated | inline      | safe unless `at-limit=exact`      |
