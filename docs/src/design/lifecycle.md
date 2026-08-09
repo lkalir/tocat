@@ -30,15 +30,29 @@ would-block) are logged and the loop continues; anything else ends the run.
 ## Signals
 
 The first SIGINT or SIGTERM flips a watch channel: the listener stops accepting,
-and a task tracker waits for the connections still in flight to finish. A second
-signal exits immediately with status 130.
+every connection still in flight is handed the same watch, and a task tracker
+waits for them to finish. A second signal exits immediately with status 130.
 
-Async paths observe this by awaiting the watch in a `select!`. The synchronous
-copy path cannot, since a `spawn_blocking` task is not cancellable, so it polls
-between chunks instead. That leaves one case it cannot cover: a read that never
-returns, such as a FIFO with no writer. The runtime is therefore shut down with
-a short grace period rather than being dropped, so those tasks are left behind
-instead of making the process unkillable by signal.
+A connection observes the signal *as end of stream*, not as cancellation. The
+handle goes down to the reads that touch an endpoint, which stop returning
+chunks, and the ordinary end-of-stream path takes it from there: `on_eof` runs,
+a stage holding buffered bytes gets to emit them, side channels are applied and
+the writer is flushed and shut down. Racing the copy against the watch in a
+`select!` would skip all of that, which is why only the two paths with no stages
+do it: the plugin-free `copy_bidirectional` shortcut, and the synchronous copy.
+
+Within a pipeline, only the head watches. A read from a segment boundary does
+not: the head stopping closes its outlet, which is end of stream for the segment
+below it, so `on_eof` cascades in order and parcels still in the channel are
+drained rather than dropped. A `process` stage stops feeding and closes the
+child's stdin, which is the only end of stream a subprocess has, and then keeps
+draining its stdout so a filter holding a block still writes it out.
+
+The synchronous copy path cannot do either, since a `spawn_blocking` task is not
+cancellable, so it polls between chunks instead. That leaves one case it cannot
+cover: a read that never returns, such as a FIFO with no writer. The runtime is
+therefore shut down with a short grace period rather than being dropped, so
+those tasks are left behind instead of making the process unkillable by signal.
 
 ## Cleanup
 

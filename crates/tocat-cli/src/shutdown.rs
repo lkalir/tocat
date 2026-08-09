@@ -1,10 +1,17 @@
 //! shutdown.rs: draining on signal.
 //!
 //! The first SIGINT/SIGTERM asks the relay to stop accepting and drain what is
-//! in flight; a second one exits immediately. Async paths observe this by
-//! awaiting [`Shutdown::recv`] in a `select!`. The blocking copy path cannot.
-//! A `spawn_blocking` task is not cancellable, so it polls
-//! [`Shutdown::is_triggered`] between chunks instead.
+//! in flight; a second one exits immediately.
+//!
+//! Draining means the signal is delivered *as end of stream*, not as
+//! cancellation: a handle goes down to the reads that touch an endpoint, which
+//! stop returning chunks, and the ordinary end-of-stream path takes it from
+//! there, so stages still get `on_eof` and still get their last bytes written.
+//! Racing a copy against [`Shutdown::recv`] in a `select!` is only correct
+//! where nothing is declared and nothing is owed a flush.
+//!
+//! The blocking copy path can do neither. A `spawn_blocking` task is not
+//! cancellable, so it polls [`Shutdown::is_triggered`] between chunks instead.
 
 use tokio::sync::watch;
 use tracing::{info, warn};

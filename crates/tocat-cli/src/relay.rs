@@ -12,8 +12,16 @@
 //! instances**: stages are stateful (byte offsets, codec state) and sharing
 //! them across connections would interleave nonsense. Only the channel handles
 //! are shared, which is how several connections can dump into one file. On
-//! shutdown the listener stops accepting and a `TaskTracker` drains what is
-//! still in flight; a second signal exits immediately.
+//! shutdown the listener stops accepting, every connection still in flight is
+//! handed the same signal so it stops reading and drains its stages, and a
+//! `TaskTracker` waits for them; a second signal exits immediately.
+//!
+//! A signal is not cancellation anywhere a plugin can be holding bytes. The
+//! handle is passed down to `pump` rather than raced against it in a `select!`,
+//! because dropping the copy future would skip `on_eof` and lose whatever a
+//! stage had buffered. The exceptions are the two paths with no stages at all:
+//! `copy_bidirectional_with_sizes` below, and the blocking copy, which cannot
+//! be cancelled and so is abandoned instead.
 //!
 //! `relay_streams` picks the transport. With nothing declared on either path it
 //! goes straight to `copy_bidirectional_with_sizes`, exactly as before plugins
@@ -134,73 +142,6 @@ fn copy_sync(
     writer.flush()?;
 
     Ok(total)
-}
-
-/// Drive the relay.
-///
-/// Delegates to a fast-path if there are no plugins.
-async fn relay_streams(
-    src_stream: EndpointStream,
-    sink_stream: EndpointStream,
-    forward: Chain,
-    reverse: Chain,
-    channels: Arc<Channels>,
-    buffer: usize,
-    meter: Option<Arc<Meter>>,
-) -> anyhow::Result<()> {
-    // Nothing declared and both ends duplex byte streams: hand the whole thing to
-    // tokio and stay out of the way.
-    //
-    // Not while a meter is running: `copy_bidirectional` offers nowhere to
-    // count from, and the split path below is where a read half can be
-    // wrapped. Measuring costs the shortcut.
-    let (src_stream, sink_stream) = if forward.is_empty() && reverse.is_empty() && meter.is_none() {
-        match (src_stream, sink_stream) {
-            (EndpointStream::Duplex(mut a), EndpointStream::Duplex(mut b)) => {
-                let (to_sink, to_source) =
-                    tokio::io::copy_bidirectional_with_sizes(&mut a, &mut b, buffer, buffer)
-                        .await?;
-                info!(bytes = to_sink + to_source, "relay finished");
-                return Ok(());
-            }
-            pair => pair,
-        }
-    } else {
-        (src_stream, sink_stream)
-    };
-
-    // A chain on one path only still leaves the other on a plain copy: `pump`
-    // dispatches per direction.
-    let (src_read, src_write) = src_stream.into_halves();
-    let (sink_read, sink_write) = sink_stream.into_halves();
-
-    // Counting happens at the endpoint, before any stage sees the bytes.
-    let (src_read, forward_count) = progress::count(meter.as_ref(), src_read, Flow::SourceToSink);
-    let (sink_read, reverse_count) = progress::count(meter.as_ref(), sink_read, Flow::SinkToSource);
-
-    let (a, b) = tokio::try_join!(
-        pump(
-            src_read,
-            sink_write,
-            forward,
-            channels.clone(),
-            buffer,
-            forward_count
-        ),
-        pump(
-            sink_read,
-            src_write,
-            reverse,
-            channels.clone(),
-            buffer,
-            reverse_count
-        ),
-    )?;
-
-    info!(bytes = a + b, "relay finished");
-    channels.flush().await?;
-
-    Ok(())
 }
 
 /// A configured relay: two endpoints, a plugin declaration list, and the side
@@ -327,18 +268,25 @@ impl Relay {
             self.serve(Direction::Sink, shutdown).await
         } else if self.sink.is_fork() {
             self.serve(Direction::Source, shutdown).await
-        } else {
-            // The blocking path needs its own handle: dropping the future on
-            // shutdown detaches the task rather than stopping it.
+        } else if self.prefers_sync() {
+            // The one path that has to be abandoned rather than drained: a
+            // `spawn_blocking` task cannot be cancelled, and a read that never
+            // returns would hold the runtime open forever. Nothing is owed an
+            // `on_eof` here, since this path is only taken with no plugins.
             let watcher = shutdown.clone();
 
             tokio::select! {
-                res = self.run_once(watcher) => res,
-                _ = shutdown.recv() => {
+                res = self.run_sync(watcher) => res,
+                () = shutdown.recv() => {
                     info!("interrupted");
                     Ok(())
                 }
             }
+        } else {
+            // Not a `select!`: the signal is delivered *into* the copy, which
+            // stops reading and then runs the stages' end-of-stream path.
+            // Dropping this future would skip that.
+            self.run_once(shutdown).await
         }
     }
 
@@ -411,11 +359,95 @@ impl Relay {
         Ok(())
     }
 
-    async fn run_once(&self, shutdown: Shutdown) -> anyhow::Result<()> {
-        if self.prefers_sync() {
-            return self.run_sync(shutdown).await;
-        }
+    /// Drive one connection.
+    ///
+    /// Delegates to a fast-path if there are no plugins. A method rather than a
+    /// free function because the buffer size, the channels and the meter are
+    /// all on `self` and both callers had to hand them over one at a time.
+    async fn relay_streams(
+        &self,
+        src_stream: EndpointStream,
+        sink_stream: EndpointStream,
+        forward: Chain,
+        reverse: Chain,
+        mut shutdown: Shutdown,
+    ) -> anyhow::Result<()> {
+        let meter = self.progress.clone();
+        let buffer = self.buffer;
 
+        // Nothing declared and both ends duplex byte streams: hand the whole thing to
+        // tokio and stay out of the way.
+        //
+        // Not while a meter is running: `copy_bidirectional` offers nowhere to
+        // count from, and the split path below is where a read half can be
+        // wrapped. Measuring costs the shortcut.
+        let (src_stream, sink_stream) =
+            if forward.is_empty() && reverse.is_empty() && meter.is_none() {
+                match (src_stream, sink_stream) {
+                    (EndpointStream::Duplex(mut a), EndpointStream::Duplex(mut b)) => {
+                        // Dropping the copy is only acceptable because nothing
+                        // was declared: no stage is holding bytes and no
+                        // `on_eof` is owed to anyone. Every path that has one
+                        // goes through `pump`, which drains instead.
+                        tokio::select! {
+                            copied = tokio::io::copy_bidirectional_with_sizes(
+                                &mut a, &mut b, buffer, buffer,
+                            ) => {
+                                let (to_sink, to_source) = copied?;
+                                info!(bytes = to_sink + to_source, "relay finished");
+                            }
+                            () = shutdown.recv() => info!("interrupted"),
+                        }
+
+                        return Ok(());
+                    }
+                    pair => pair,
+                }
+            } else {
+                (src_stream, sink_stream)
+            };
+
+        // A chain on one path only still leaves the other on a plain copy: `pump`
+        // dispatches per direction.
+        let (src_read, src_write) = src_stream.into_halves();
+        let (sink_read, sink_write) = sink_stream.into_halves();
+
+        // Counting happens at the endpoint, before any stage sees the bytes.
+        let (src_read, forward_count) =
+            progress::count(meter.as_ref(), src_read, Flow::SourceToSink);
+        let (sink_read, reverse_count) =
+            progress::count(meter.as_ref(), sink_read, Flow::SinkToSource);
+
+        let (a, b) = tokio::try_join!(
+            pump(
+                src_read,
+                sink_write,
+                forward,
+                self.channels.clone(),
+                buffer,
+                forward_count,
+                shutdown.clone(),
+            ),
+            pump(
+                sink_read,
+                src_write,
+                reverse,
+                self.channels.clone(),
+                buffer,
+                reverse_count,
+                shutdown.clone(),
+            ),
+        )?;
+
+        info!(bytes = a + b, "relay finished");
+        self.channels.flush().await?;
+
+        Ok(())
+    }
+
+    /// One connection, on the async path. The sync path is chosen by
+    /// [`Self::dispatch`], which has to treat a signal differently.
+    async fn run_once(&self, shutdown: Shutdown) -> anyhow::Result<()> {
         let (src_conn, sink_conn) = if self.source.is_listen() && self.sink.is_listen() {
             // This prevents clients connecting to the sink from needlessly being blocked on
             // waiting for clients to connect to the source first
@@ -434,14 +466,12 @@ impl Relay {
 
         let (forward, reverse) = self.chains(&self.source.name(), &self.sink.name(), None)?;
 
-        relay_streams(
+        self.relay_streams(
             src_conn.stream,
             sink_conn.stream,
             forward,
             reverse,
-            self.channels.clone(),
-            self.buffer,
-            self.progress.clone(),
+            shutdown,
         )
         .await
     }
@@ -493,11 +523,17 @@ impl Relay {
             let this = Arc::clone(&self);
             let span = tracing::info_span!("conn", %peer);
 
+            // Its own handle, so a connection already in flight stops reading
+            // on the signal and drains rather than running until its peer
+            // happens to hang up. Without this the tracker below waits on
+            // connections that were never told anything had changed.
+            let shutdown = shutdown.clone();
+
             // Let handler task go off and handle the connection
             tracker.spawn(
                 async move {
                     let _permit = permit;
-                    match this.handle_client(stream, &peer, peer_dir).await {
+                    match this.handle_client(stream, &peer, peer_dir, shutdown).await {
                         Ok(()) => info!("closed cleanly"),
                         Err(err) => error!(error = ?err, "terminated with error"),
                     }
@@ -519,6 +555,7 @@ impl Relay {
         accepted: EndpointStream,
         peer: &str,
         peer_dir: Direction,
+        shutdown: Shutdown,
     ) -> anyhow::Result<()> {
         // Counted for the display's connection gauge until this returns.
         let _connection = self.progress.as_ref().map(|meter| meter.connected());
@@ -551,15 +588,7 @@ impl Relay {
 
         let (forward, reverse) = self.chains(&src_name, &sink_name, Some(peer))?;
 
-        relay_streams(
-            src_stream,
-            sink_stream,
-            forward,
-            reverse,
-            self.channels.clone(),
-            self.buffer,
-            self.progress.clone(),
-        )
-        .await
+        self.relay_streams(src_stream, sink_stream, forward, reverse, shutdown)
+            .await
     }
 }

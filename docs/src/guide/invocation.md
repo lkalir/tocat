@@ -84,6 +84,12 @@ in flight; a second exits immediately with status 130. A relay that finishes
 normally exits 0, and one that fails to start or fails mid-transfer logs the
 error and exits 1.
 
+Draining includes the pipeline. The signal reaches a plugin as end of stream, so
+a stage holding buffered bytes still emits them and a stage that writes an
+epilogue still writes it: interrupting `hash` prints its digest, interrupting
+`compress` closes the frame, and a `block` stage flushes its partial tail. Wait
+for the exit rather than sending a second signal if you want that output.
+
 One case cannot be interrupted promptly: the synchronous copy path (chosen when
 there are no plugins and both endpoints are file, pipe or stdio) checks for
 shutdown between chunks, so a read that never returns, such as a FIFO with no

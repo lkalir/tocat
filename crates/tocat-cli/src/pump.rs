@@ -39,6 +39,22 @@
 //! sends one parcel per unit. That last one is the expensive case: a stage
 //! cutting a chunk into many small units turns one task hop into one per unit,
 //! which is a reason not to detach a stage sitting under one.
+//!
+//! # Shutdown
+//!
+//! A signal is upstream end-of-stream arriving early, not cancellation. Only
+//! the reads that touch an endpoint watch for it: they stop returning chunks,
+//! and everything after that is the ordinary end-of-stream path, so `on_eof`
+//! runs, whatever a stage was holding is emitted, side channels are applied
+//! and the writer is flushed and shut down. Dropping these futures instead
+//! would skip all of that and lose a `hash` digest, a compressor's epilogue,
+//! or a `block` stage's tail.
+//!
+//! Reads from a segment boundary deliberately do *not* watch for it. The head
+//! stopping closes its outlet, which is end of stream for the segment below,
+//! which drains what is still in the channel before running its own `on_eof`.
+//! Breaking that cascade at every boundary at once would throw away parcels
+//! still in flight, and the bytes the head just emitted from `finish` first.
 
 use std::{sync::Arc, time::Instant};
 
@@ -57,6 +73,7 @@ use crate::{
     endpoint::{BoxRead, BoxWrite, DatagramSocket, ReadHalf, WriteHalf},
     host::{Channels, Effects},
     progress::Counter,
+    shutdown::Shutdown,
 };
 
 /// Chunks in flight per detached boundary. Deep enough to keep both sides busy,
@@ -75,20 +92,20 @@ pub async fn pump(
     channels: Arc<Channels>,
     buffer: usize,
     counter: Option<Counter>,
+    shutdown: Shutdown,
 ) -> anyhow::Result<u64> {
     let meta = chain.meta().clone();
     let mut segments = chain.into_segments();
 
     match segments.len() {
-        // Datagrams cannot take the byte-stream shortcut: `copy_buf` is free to coalesce reads,
-        // which would merge two messages into one send. An empty pipeline preserves the
-        // one-in-one-out mapping instead
+        // Datagrams cannot take the byte-stream shortcut: a coalescing copy would merge two
+        // messages into one send. An empty pipeline preserves the one-in-one-out mapping instead
         0 if matches!(reader, ReadHalf::Stream(_)) && matches!(writer, WriteHalf::Stream(_)) => {
-            copy_direct(reader, writer, buffer).await
+            copy_direct(reader, writer, buffer, shutdown).await
         }
         0 => {
             run_pipeline(
-                Source::new(Upstream::Stream(reader), buffer, counter),
+                Source::new(Upstream::Stream(reader), buffer, counter, shutdown),
                 Downstream::Stream(writer).into(),
                 Pipeline::new(meta, Vec::new()),
                 channels,
@@ -103,10 +120,16 @@ pub async fn pump(
                 channels,
                 buffer,
                 counter,
+                shutdown,
             )
             .await
         }
-        _ => run_segmented(reader, writer, segments, channels, buffer, counter).await,
+        _ => {
+            run_segmented(
+                reader, writer, segments, channels, buffer, counter, shutdown,
+            )
+            .await
+        }
     }
 }
 
@@ -136,34 +159,86 @@ async fn run_segment(
     channels: Arc<Channels>,
     buffer: usize,
     counter: Option<Counter>,
+    shutdown: Shutdown,
 ) -> anyhow::Result<u64> {
     match segment {
         Segment::Inline(pipeline) => {
             run_pipeline(
-                Source::new(input, buffer, counter),
+                Source::new(input, buffer, counter, shutdown),
                 output.into(),
                 pipeline,
                 channels,
             )
             .await
         }
-        Segment::Process(external) => run_process(external, input, output, buffer, counter).await,
+        Segment::Process(external) => {
+            run_process(external, input, output, buffer, counter, shutdown).await
+        }
     }
 }
 
 /// No stages: runs straight through.
-async fn copy_direct(reader: ReadHalf, writer: WriteHalf, buffer: usize) -> anyhow::Result<u64> {
-    let (ReadHalf::Stream(reader), WriteHalf::Stream(mut writer)) = (reader, writer) else {
+///
+/// Hand rolled rather than `copy_buf` so a signal is observed between chunks.
+/// Cancelling a copy future mid-flight would drop bytes it had read and not
+/// yet written, and there is no kernel offload to give up: this is the same
+/// read-then-write loop, minus one layer of buffering.
+async fn copy_direct(
+    reader: ReadHalf,
+    writer: WriteHalf,
+    buffer: usize,
+    mut shutdown: Shutdown,
+) -> anyhow::Result<u64> {
+    let (ReadHalf::Stream(mut reader), WriteHalf::Stream(mut writer)) = (reader, writer) else {
         unreachable!("checked by the caller");
     };
 
-    let mut reader = BufReader::with_capacity(buffer, reader);
-    let total = tokio::io::copy_buf(&mut reader, &mut writer).await?;
+    let mut buf = Buffer::new(buffer);
+    let mut total = 0u64;
+
+    loop {
+        let Some(n) = read_or_stop(&mut reader, &mut buf, &mut shutdown).await? else {
+            break;
+        };
+
+        if n == 0 {
+            break;
+        }
+
+        writer.write_all(&buf[..n]).await?;
+        total += n as u64;
+    }
 
     writer.flush().await?;
     let _ = writer.shutdown().await;
 
     Ok(total)
+}
+
+/// One read, unless a signal arrived first.
+///
+/// `None` means stop: either the signal was already pending, or it landed
+/// while the read was parked. The read arm is biased ahead of the signal so
+/// bytes already waiting are never dropped in favour of the shutdown, and the
+/// cheap check up front is what keeps a saturated stream, whose read arm wins
+/// every race, from never noticing the signal at all.
+///
+/// Cancel safe: the only future dropped here is a `poll_read`, which consumes
+/// nothing when it does not complete.
+async fn read_or_stop(
+    reader: &mut BoxRead,
+    buf: &mut Buffer,
+    shutdown: &mut Shutdown,
+) -> anyhow::Result<Option<usize>> {
+    if shutdown.is_triggered() {
+        return Ok(None);
+    }
+
+    tokio::select! {
+        biased;
+        n = reader.read(&mut buf[..]) => Ok(Some(n?)),
+        () = shutdown.recv() => Ok(None),
+    }
 }
 
 /// Two or more segments, joined by bounded channels.
@@ -174,6 +249,7 @@ async fn run_segmented(
     channels: Arc<Channels>,
     buffer: usize,
     counter: Option<Counter>,
+    shutdown: Shutdown,
 ) -> anyhow::Result<u64> {
     let n = segments.len();
 
@@ -203,9 +279,12 @@ async fn run_segmented(
         };
 
         let channels = channels.clone();
+        let shutdown = shutdown.clone();
 
         spawned.push(tokio::spawn(async move {
-            // No counter: only the head reads from the endpoint.
+            // No counter: only the head reads from the endpoint. The handle is
+            // inert here for the same reason: a segment reading from a link
+            // stops when the link closes, never on the signal itself.
             run_segment(
                 segment,
                 Upstream::Link(inlet),
@@ -213,6 +292,7 @@ async fn run_segmented(
                 channels,
                 buffer,
                 None,
+                shutdown,
             )
             .await
             .map(|_| ())
@@ -233,6 +313,7 @@ async fn run_segmented(
         channels,
         buffer,
         counter,
+        shutdown,
     )
     .await?;
 
@@ -250,12 +331,19 @@ async fn run_segmented(
 /// filter that buffers (e.g. `sort`, `tac`, `gzip`) with a block pending: the
 /// child blocks writing stdout because nobody is draining it, and we block
 /// writing stdin because its pipe is full. Neither side moves.
+///
+/// A signal reaches the child the only way it can: the feeding half stops
+/// reading and closes stdin, which is the child's end of stream. Draining is
+/// then left alone until stdout closes, so a filter holding a block still gets
+/// to write it out. A child that ignores its stdin closing keeps the drain
+/// parked, which is what the second signal is for.
 async fn run_process(
     external: ExternalStage,
     input: Upstream,
     output: Downstream,
     buffer: usize,
     counter: Option<Counter>,
+    mut shutdown: Shutdown,
 ) -> anyhow::Result<u64> {
     let (program, args) = external
         .argv
@@ -269,20 +357,38 @@ async fn run_process(
         let mut stdin = parts.stdin;
 
         let total = match input {
-            Upstream::Stream(ReadHalf::Stream(reader)) => {
-                let mut reader = BufReader::with_capacity(buffer, reader);
-                tokio::io::copy_buf(&mut reader, &mut stdin).await?
+            Upstream::Stream(ReadHalf::Stream(mut reader)) => {
+                let mut buf = Buffer::new(buffer);
+                let mut total = 0u64;
+
+                while let Some(n) = read_or_stop(&mut reader, &mut buf, &mut shutdown).await? {
+                    if n == 0 {
+                        break;
+                    }
+
+                    stdin.write_all(&buf[..n]).await?;
+                    total += n as u64;
+                }
+
+                total
             }
             Upstream::Stream(ReadHalf::Datagram(socket)) => {
-                // No EOF on a datagram source, so stdin is never closed and the
-                // child never flushes on its own: this needs a filter that
-                // streams its output. It ends when the relay does.
+                // No EOF on a datagram source, so stdin is closed only when the
+                // relay stops: until then this needs a filter that streams its
+                // output rather than one that waits for end of stream.
                 let mut buf = Buffer::new(buffer);
+                let mut total = 0u64;
 
-                // Diverges: the loop has no break, so it types as `!` and the
-                // byte count below is never reached.
                 loop {
-                    let n = socket.recv(&mut buf).await?;
+                    if shutdown.is_triggered() {
+                        break;
+                    }
+
+                    let n = tokio::select! {
+                        biased;
+                        n = socket.recv(&mut buf) => n?,
+                        () = shutdown.recv() => break,
+                    };
 
                     if let Some(counter) = &counter {
                         counter.add(n as u64);
@@ -290,7 +396,10 @@ async fn run_process(
 
                     stdin.write_all(&buf[..n]).await?;
                     stdin.flush().await?;
+                    total += n as u64;
                 }
+
+                total
             }
             Upstream::Link(mut inlet) => {
                 let mut total = 0u64;
@@ -383,6 +492,9 @@ enum Source {
     Stream {
         reader: BoxRead,
         buf: Buffer,
+        /// Watched between reads: a signal ends this source the same way the
+        /// peer closing does, so the stages above still see end of stream.
+        shutdown: Shutdown,
     },
     /// One `next` call is one datagram.
     Datagram {
@@ -391,6 +503,8 @@ enum Source {
         /// A datagram socket has no reader to wrap, so the progress display's
         /// counter is applied here instead.
         counter: Option<Counter>,
+        /// The only thing that ever ends a datagram source.
+        shutdown: Shutdown,
     },
     Link {
         inlet: Inlet,
@@ -399,17 +513,26 @@ enum Source {
 }
 
 impl Source {
-    fn new(upstream: Upstream, buffer: usize, counter: Option<Counter>) -> Self {
+    fn new(
+        upstream: Upstream,
+        buffer: usize,
+        counter: Option<Counter>,
+        shutdown: Shutdown,
+    ) -> Self {
         match upstream {
             Upstream::Stream(ReadHalf::Stream(reader)) => Source::Stream {
                 reader,
                 buf: Buffer::new(buffer),
+                shutdown,
             },
             Upstream::Stream(ReadHalf::Datagram(socket)) => Source::Datagram {
                 socket,
                 buf: Buffer::new(buffer),
                 counter,
+                shutdown,
             },
+            // Deliberately dropped: this segment ends when the one above it
+            // closes the link, which is how `on_eof` cascades in order.
             Upstream::Link(inlet) => Source::Link { inlet, spent: None },
         }
     }
@@ -423,18 +546,36 @@ impl Source {
     /// need `&mut self` while the borrow is still live.
     async fn next(&mut self) -> anyhow::Result<Option<&[u8]>> {
         match self {
-            Source::Stream { reader, buf } => {
-                let n = reader.read(&mut buf[..]).await?;
+            Source::Stream {
+                reader,
+                buf,
+                shutdown,
+            } => {
+                let Some(n) = read_or_stop(reader, buf, shutdown).await? else {
+                    return Ok(None);
+                };
+
                 Ok((n > 0).then(|| &buf[..n]))
             }
             Source::Datagram {
                 socket,
                 buf,
                 counter,
+                shutdown,
             } => {
                 // A datagram socket has no EOF: it stops when the relay does. A
-                // zero-length datagram is legal and distinct from "no more".
-                let n = socket.recv(&mut buf[..]).await?;
+                // zero-length datagram is legal and distinct from "no more",
+                // which is why the signal is reported as `None` and a received
+                // message never is.
+                if shutdown.is_triggered() {
+                    return Ok(None);
+                }
+
+                let n = tokio::select! {
+                    biased;
+                    n = socket.recv(&mut buf[..]) => n?,
+                    () = shutdown.recv() => return Ok(None),
+                };
 
                 if let Some(counter) = counter {
                     counter.add(n as u64);
