@@ -1,5 +1,4 @@
 [workspace]
-resolver = "3"
 members = [
   "crates/tocat-api",
   "crates/tocat-cli",
