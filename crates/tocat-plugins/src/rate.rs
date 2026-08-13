@@ -22,7 +22,7 @@
 //!
 //! Reports come from [`Plugin::on_tick`], not from chunks arriving, so they
 //! land on schedule and a stalled stream is reported rather than silent. The
-//! per-chunk path is two adds and a branch: it never reads the clock after the
+//! per-chunk path is four adds and a branch: it never reads the clock after the
 //! first chunk has stamped the start.
 //!
 //! A stall is announced once and then not repeated, because these are log
@@ -324,6 +324,10 @@ pub struct Rate {
     /// quiet rather than repeating it.
     stalled: bool,
     scratch: String,
+    /// Chunks seen since the first byte arrived.
+    chunks: u64,
+    /// Chunks in the window the next report will cover.
+    window_chunks: u64,
 }
 
 impl Rate {
@@ -350,12 +354,14 @@ impl Rate {
                 self.scratch.clear();
                 let _ = writeln!(
                     self.scratch,
-                    "{},{:.3},{},{},{:.0}",
+                    "{},{:.3},{},{},{:.0},{},{}",
                     self.stage,
                     now.duration_since(started).as_secs_f64(),
                     self.total,
                     self.window,
                     rate,
+                    self.chunks,
+                    self.window_chunks,
                 );
                 ctx.side_write(channel, self.scratch.as_bytes());
             }
@@ -370,9 +376,10 @@ impl Rate {
             }
             None => {
                 let message = format!(
-                    "{} ({} in {window:.1}s), {} total",
+                    "{} ({} in {window:.1}s, {}), {} total",
                     self.unit.rate(rate),
                     self.unit.amount(self.window),
+                    chunk_count(self.window_chunks),
                     self.unit.amount(self.total),
                 );
                 ctx.log(self.level, &message);
@@ -382,6 +389,7 @@ impl Rate {
         self.stalled = idle;
         self.last = now;
         self.window = 0;
+        self.window_chunks = 0;
     }
 }
 
@@ -401,10 +409,12 @@ impl Plugin for Rate {
 
         self.total += input.len() as u64;
         self.window += input.len() as u64;
+        self.chunks += 1;
+        self.window_chunks += 1;
 
         // First bytes: this is where the clock starts, so idle time waiting for
         // a peer is not averaged into the transfer's rate. Every chunk after it
-        // costs two adds and this branch. The reporting is somebody else's
+        // costs four adds and this branch. The reporting is somebody else's
         // problem.
         if self.started.is_none() {
             let now = Instant::now();
@@ -471,6 +481,19 @@ impl Plugin for Rate {
             let _ = write!(message, ", {} peak", self.unit.rate(self.peak));
         }
 
+        // `started` is set by the first chunk, so reaching here means at least
+        // one was counted and the division below is safe.
+        let _ = write!(message, ", {}", chunk_count(self.chunks));
+
+        // With one chunk the mean is the total restated, so it is left out.
+        if self.chunks > 1 {
+            let _ = write!(
+                message,
+                ", mean {}",
+                self.unit.amount(self.total / self.chunks),
+            );
+        }
+
         message.push(')');
         ctx.log(self.level, &message);
 
@@ -511,6 +534,8 @@ impl PluginFactory for RateFactory {
             peak: 0.0,
             stalled: false,
             scratch: String::new(),
+            chunks: 0,
+            window_chunks: 0,
         }))
     }
 }
@@ -538,6 +563,11 @@ fn scaled(value: f64, step: f64, units: &[&str]) -> String {
     };
 
     format!("{value:.digits$}{}", units[unit])
+}
+
+/// `1 chunk` or `12 chunks`.
+fn chunk_count(count: u64) -> String {
+    format!("{count} chunk{}", if count == 1 { "" } else { "s" })
 }
 
 /// Elapsed time to `H:MM:SS`.
@@ -651,6 +681,10 @@ mod tests {
         );
     }
 
+    fn fields(row: &str) -> Vec<&str> {
+        row.trim_end().split(',').collect()
+    }
+
     #[test]
     fn passes_the_payload_through_untouched() {
         let mut rate = build(json!({}));
@@ -682,6 +716,26 @@ mod tests {
 
         assert_eq!(sink.logs.len(), 1);
         assert!(sink.logs[0].contains("4.00KiB in"), "{}", sink.logs[0]);
+        assert!(sink.logs[0].contains("1 chunk)"), "{}", sink.logs[0]);
+    }
+
+    /// The count on a report is the window's, not the run's. On a datagram
+    /// path this line is the only chunk count anyone ever sees, because the
+    /// summary needs an EOF that never comes.
+    #[test]
+    fn a_report_counts_only_its_own_window() {
+        let mut rate = build(json!({ "interval": "1ms" }));
+        let mut sink = Recorder::default();
+
+        feed(rate.as_mut(), &mut sink, b"one");
+        feed(rate.as_mut(), &mut sink, b"two");
+        tick(rate.as_mut(), &mut sink);
+
+        feed(rate.as_mut(), &mut sink, b"three");
+        tick(rate.as_mut(), &mut sink);
+
+        assert!(sink.logs[0].contains("2 chunks)"), "{}", sink.logs[0]);
+        assert!(sink.logs[1].contains("1 chunk)"), "{}", sink.logs[1]);
     }
 
     /// The point of the hook: without it a stalled stream and a finished one
@@ -739,14 +793,40 @@ mod tests {
         let mut sink = Recorder::default();
 
         feed(rate.as_mut(), &mut sink, &[0u8; 2048]);
+        feed(rate.as_mut(), &mut sink, &[0u8; 2048]);
         finish(rate.as_mut(), &mut sink);
 
         let summary = sink.logs.last().expect("a summary");
-        assert!(summary.contains("2.00KiB"), "unexpected summary: {summary}");
+        assert!(summary.contains("4.00KiB"), "unexpected summary: {summary}");
+        assert!(
+            summary.contains("2 chunks"),
+            "unexpected summary: {summary}"
+        );
+        assert!(
+            summary.contains("mean 2.00KiB"),
+            "unexpected summary: {summary}"
+        );
         assert!(
             !summary.contains("peak"),
             "no windows, so no peak: {summary}",
         );
+    }
+
+    /// One chunk is singular, and its mean is the total said twice.
+    #[test]
+    fn a_single_chunk_needs_no_mean() {
+        let mut rate = build(json!({ "interval": 0 }));
+        let mut sink = Recorder::default();
+
+        feed(rate.as_mut(), &mut sink, &[0u8; 2048]);
+        finish(rate.as_mut(), &mut sink);
+
+        let summary = sink.logs.last().expect("a summary");
+        assert!(
+            summary.contains("1 chunk)"),
+            "unexpected summary: {summary}"
+        );
+        assert!(!summary.contains("mean"), "unexpected summary: {summary}");
     }
 
     /// Nothing arrived, so there is nothing to average over: a "0B in 0:00:00"
@@ -773,7 +853,33 @@ mod tests {
 
         let row = String::from_utf8(sink.writes[0].clone()).unwrap();
         assert!(row.starts_with("rate,"), "unexpected row: {row}");
-        assert_eq!(row.split(',').count(), 5, "five columns: {row}");
+
+        let columns = fields(&row);
+        assert_eq!(columns.len(), 7, "seven columns: {row}");
+        assert_eq!(columns[2], "7", "bytes so far: {row}");
+        assert_eq!(columns[5], "1", "chunks so far: {row}");
+        assert_eq!(columns[6], "1", "chunks this window: {row}");
+    }
+
+    /// The running total keeps climbing while the window column resets, which
+    /// is what makes the file a time series rather than a stack of totals.
+    #[test]
+    fn sample_chunk_counts_are_a_total_and_a_delta() {
+        let mut rate = build(json!({ "interval": "1ms", "file": "samples.csv" }));
+        let mut sink = Recorder::default();
+
+        feed(rate.as_mut(), &mut sink, b"one");
+        feed(rate.as_mut(), &mut sink, b"two");
+        tick(rate.as_mut(), &mut sink);
+
+        feed(rate.as_mut(), &mut sink, b"three");
+        tick(rate.as_mut(), &mut sink);
+
+        let first = String::from_utf8(sink.writes[0].clone()).unwrap();
+        let second = String::from_utf8(sink.writes[1].clone()).unwrap();
+
+        assert_eq!(fields(&first)[5..], ["2", "2"], "{first}");
+        assert_eq!(fields(&second)[5..], ["3", "1"], "{second}");
     }
 
     /// A gap in a time series reads as missing data, so idle windows are
