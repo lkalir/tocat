@@ -13,6 +13,9 @@
 //! reach another and the binary cannot reach any of them, which is what lets a
 //! plugin change shape without anything above noticing.
 
+#[cfg(feature = "base64")]
+mod base64;
+
 #[cfg(feature = "block")]
 mod block;
 
@@ -58,6 +61,12 @@ pub fn native_registry() -> Registry {
 /// Separate from [`native_registry`] so a host that also loads WASM modules can
 /// populate one registry from both sources.
 pub fn register_native(registry: &mut Registry) {
+    #[cfg(feature = "base64")]
+    {
+        registry.register(base64::Base64Factory);
+        registry.register(base64::Unbase64Factory);
+    }
+
     #[cfg(feature = "block")]
     registry.register(block::BlockFactory);
 

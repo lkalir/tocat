@@ -43,7 +43,7 @@ socat. The currently supported sources and sinks are
 
 The plugins that ship with tocat are
 
-- [ ] base64/unbase64 - encoding using base64
+- [x] base64/unbase64 - encoding using base64
 - [x] block - accumulate and emit data in fixed sizes
 - [x] compress / decompress - zstd
 - [ ] encrypt / decrypt - symmetric stream encryption/decryption

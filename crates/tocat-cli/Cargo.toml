@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 [features]
 default = ["all-plugins", "schema"]
 all-plugins = [
+  "base64",
   "block",
   "compress",
   "hash",
@@ -58,6 +59,7 @@ all-plugins = [
   "wasm"
 ]
 all-plugins-no-wasm = [
+  "base64",
   "block",
   "compress",
   "hash",
@@ -68,6 +70,7 @@ all-plugins-no-wasm = [
   "throttle",
   "timeout",
 ]
+base64 = ["tocat-plugins/base64"]
 block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
 hash = ["tocat-plugins/hash"]

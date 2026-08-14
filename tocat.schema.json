@@ -72,6 +72,12 @@
           "$ref": "#/$defs/plugin-decompress"
         },
         {
+          "$ref": "#/$defs/plugin-base64"
+        },
+        {
+          "$ref": "#/$defs/plugin-unbase64"
+        },
+        {
           "$ref": "#/$defs/plugin-process"
         },
         {
@@ -898,6 +904,79 @@
         }
       }
     },
+    "plugin-base64": {
+      "title": "base64",
+      "type": "object",
+      "description": "Base64-encode this path, one complete message per chunk. Asymmetric: pair it with an unbase64 entry on the opposite direction rather than using direction = 'both'.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "base64",
+          "description": "Selects the base64 plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "alphabet": {
+          "enum": [
+            "standard",
+            "url-safe"
+          ],
+          "default": "standard",
+          "description": "RFC 4648 alphabet. 'standard' uses + and /, 'url-safe' uses - and _. Both ends of a hop must agree."
+        }
+      }
+    },
+    "plugin-unbase64": {
+      "title": "unbase64",
+      "type": "object",
+      "description": "Base64-decode this path, one complete message per chunk. A chunk that is not a whole number of base64 groups is a configuration error rather than a payload: message boundaries come from the datagram path or from a framing stage ahead of this one.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "unbase64",
+          "description": "Selects the unbase64 plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "alphabet": {
+          "enum": [
+            "standard",
+            "url-safe"
+          ],
+          "default": "standard",
+          "description": "RFC 4648 alphabet. 'standard' uses + and /, 'url-safe' uses - and _. Both ends of a hop must agree."
+        },
+        "accept-unpadded": {
+          "type": "boolean",
+          "default": false,
+          "description": "Restore padding the peer omitted instead of rejecting the message. Costs a diagnostic: a message truncated by 1 or 2 characters then decodes to a short payload rather than erroring. A length remainder of 1 is rejected either way."
+        }
+      }
+    },
     "plugin-process": {
       "title": "process",
       "type": "object",
@@ -1065,8 +1144,16 @@
               "tee",
               "compress",
               "decompress",
+              "base64",
+              "unbase64",
               "process",
-              "rate"
+              "rate",
+              "limit",
+              "throttle",
+              "block",
+              "hash",
+              "timeout",
+              "wasm"
             ]
           },
           "description": "Plugin to instantiate."

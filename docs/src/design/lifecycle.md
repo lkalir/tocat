@@ -32,7 +32,8 @@ that demultiplexes the socket by source address and hands each new sender to the
 same accept loop as a session. Everything downstream of that is identical; what
 differs is that a session has no close to end it, so a `timeout` stage on both
 paths is what reclaims one, and that the connection ceiling is enforced in the
-receive loop, since a session exists by the time the accept loop sees it. See [The datagram model](datagrams.md).
+receive loop, since a session exists by the time the accept loop sees it. See
+[The datagram model](datagrams.md).
 
 ## Signals
 

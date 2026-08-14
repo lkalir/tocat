@@ -34,8 +34,7 @@ a null sink, holding the relay open for an EOF nobody will send; paired with
 `udp:` it would wait for one that cannot arrive at all, since a datagram socket
 has no end of stream. Either way the direction that mattered has already
 finished. Stages declared on a direction that does not exist are warned about
-rather than silently skipped, since they were built and are about to do
-nothing.
+rather than silently skipped, since they were built and are about to do nothing.
 
 ## The pumps
 

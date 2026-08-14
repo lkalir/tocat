@@ -109,10 +109,10 @@ and it is the task ending that releases the permit and the map entry.
 
 Two more properties follow from the receive loop serving every sender at once.
 
-**It never blocks on one session.** A session's queue is bounded, and a
-datagram for a queue that is full is dropped rather than made to wait, since
-waiting would stall every other peer. Drops are logged loudly once and at debug
-after, so a flood does not bury the rest of the log.
+**It never blocks on one session.** A session's queue is bounded, and a datagram
+for a queue that is full is dropped rather than made to wait, since waiting
+would stall every other peer. Drops are logged loudly once and at debug after,
+so a flood does not bury the rest of the log.
 
 **The ceiling is enforced there, not at the accept.** `max-connections` is
 checked in the receive loop, because by the time a session reaches the accept

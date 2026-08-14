@@ -39,5 +39,5 @@ satisfied by one second.
 
 As with [`limit`](limit.md), an instance paces its own path, so `rate=1MiB`
 paces the source and `direction=both` is a megabyte per second each way rather
-than between them. To stop a stream rather
-than slow it, use `limit`; `rate=0` is rejected.
+than between them. To stop a stream rather than slow it, use `limit`; `rate=0`
+is rejected.

@@ -28,8 +28,8 @@ above) is dropped rather than announcing the limit again.
 
 `bytes=1MiB` is a megabyte from the source. `direction=both` builds one instance
 per path, each with its own budget, so it is a megabyte in each direction rather
-than a megabyte between them. Position matters too: before a `compress` stage it caps
-the payload, after it caps the wire.
+than a megabyte between them. Position matters too: before a `compress` stage it
+caps the payload, after it caps the wire.
 
 ## The crossing chunk
 
