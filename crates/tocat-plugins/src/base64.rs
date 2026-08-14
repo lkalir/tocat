@@ -10,6 +10,10 @@
 //! stages in the pipeline. Feed `unbase64` a raw socket read and it will
 //! decode whatever prefix happens to be group-aligned and reject the rest.
 //!
+//! That contract is the datagram contract, so both stages report
+//! [`datagram_safe`](Plugin::datagram_safe) as true: one call in, one unit
+//! out, nothing carried across.
+//!
 //! The failure is loud rather than silent: a message whose length is not a
 //! whole number of groups is a build-your-pipeline-differently error naming
 //! `unframe`, not a corrupt payload delivered downstream. The one case that
@@ -161,6 +165,12 @@ impl Plugin for Base64 {
 
         Ok(())
     }
+
+    /// Safe on a datagram path: one message in, one message out, no state
+    /// carried between calls.
+    fn datagram_safe(&self) -> bool {
+        true
+    }
 }
 
 pub struct Unbase64 {
@@ -227,6 +237,12 @@ impl Plugin for Unbase64 {
         self.repadded.resize(input.len() + 4 - remainder, b'=');
 
         Self::decode_into(self.engine, &mut self.out, ctx, &self.repadded)
+    }
+
+    /// Safe on a datagram path: one message in, one message out, no state
+    /// carried between calls.
+    fn datagram_safe(&self) -> bool {
+        true
     }
 }
 
@@ -439,6 +455,17 @@ mod tests {
 
         let mut decoder = build(&Unbase64Factory, config);
         assert_eq!(feed(decoder.as_mut(), &wire), plain);
+    }
+
+    /// The guide says both stages may sit on a datagram path, which is only
+    /// true if they say so themselves: the trait defaults to false.
+    #[test]
+    fn both_stages_are_datagram_safe() {
+        let encoder = build(&Base64Factory, json!({}));
+        let decoder = build(&Unbase64Factory, json!({}));
+
+        assert!(encoder.datagram_safe());
+        assert!(decoder.datagram_safe());
     }
 
     #[test]
