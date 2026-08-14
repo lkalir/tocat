@@ -35,6 +35,7 @@ ignore the ones in a config file.
 | [`throttle`](plugins/throttle.md) | Hold the path to a bandwidth ceiling  | untouched | inline      | safe                              |
 | [`limit`](plugins/limit.md)       | End the transfer after N bytes        | truncated | inline      | safe unless `at-limit=exact`      |
 | [`block`](plugins/block.md)       | Cut the path into fixed-size records  | reframed  | inline      | warns: boundaries are its own     |
+| [`frame`](plugins/frame.md)       | Mark or find message boundaries       | reframed  | inline      | `frame` safe, `unframe` warns     |
 | [`base64`](plugins/base64.md)     | Base64-encode or decode this path     | rewritten | inline      | safe                              |
 | [`compress`](plugins/compress.md) | zstd compress or decompress           | rewritten | detached    | warns                             |
 | [`process`](plugins/process.md)   | Pipe the path through a child process | rewritten | own process | warns                             |

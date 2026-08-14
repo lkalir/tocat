@@ -31,9 +31,8 @@ That is the datagram contract, and on a datagram path it comes for free: one
 call per message, one message out. On a byte stream a chunk is an arbitrary
 slice, and base64 packs three bytes into four characters, so a chunk cut
 anywhere other than a group boundary cannot be decoded on its own. Boundaries on
-a stream path have to come from `frame` and `unframe`, which have not landed
-yet; until they do, use these stages on datagram paths or on a peer that already
-sends one message per read.
+a stream path come from [`frame` and `unframe`](frame.md), which belong
+immediately outside these stages.
 
 A chunk whose length is not a whole number of groups is reported as a
 configuration error rather than relayed:
@@ -44,6 +43,12 @@ message is not a whole number of base64 groups: unbase64 decodes one complete me
 
 The one mistake that cannot be caught is a chunk cut exactly on a group
 boundary, which decodes to a short payload. Framing is what rules it out.
+
+Base64 output is text, so a newline delimiter is safe by construction:
+
+```console
+$ tocat - base64 unbase64:reverse frame unframe:reverse tcp:relay.internal:9000
+```
 
 ## Padding
 

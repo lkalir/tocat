@@ -18,6 +18,7 @@
   - [base64 and unbase64](guide/plugins/base64.md)
   - [block](guide/plugins/block.md)
   - [compress and decompress](guide/plugins/compress.md)
+  - [frame and unframe](guide/plugins/frame.md)
   - [hash](guide/plugins/hash.md)
   - [limit](guide/plugins/limit.md)
   - [process](guide/plugins/process.md)

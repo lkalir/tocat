@@ -31,6 +31,7 @@ default = [
   "base64",
   "block",
   "compress",
+  "frame",
   "hash",
   "limit",
   "process",
@@ -43,6 +44,7 @@ default = [
 base64 = ["dep:base64"]
 block = []
 compress = ["dep:zstd"]
+frame = []
 hash = [
   "dep:blake2",
   "dep:blake3",

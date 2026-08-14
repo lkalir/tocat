@@ -22,6 +22,9 @@ mod block;
 #[cfg(feature = "compress")]
 mod compress;
 
+#[cfg(feature = "frame")]
+mod frame;
+
 #[cfg(feature = "hash")]
 mod hash;
 
@@ -74,6 +77,12 @@ pub fn register_native(registry: &mut Registry) {
     {
         registry.register(compress::CompressFactory);
         registry.register(compress::DecompressFactory);
+    }
+
+    #[cfg(feature = "frame")]
+    {
+        registry.register(frame::FrameFactory);
+        registry.register(frame::UnframeFactory);
     }
 
     #[cfg(feature = "hash")]

@@ -78,6 +78,12 @@
           "$ref": "#/$defs/plugin-unbase64"
         },
         {
+          "$ref": "#/$defs/plugin-frame"
+        },
+        {
+          "$ref": "#/$defs/plugin-unframe"
+        },
+        {
           "$ref": "#/$defs/plugin-process"
         },
         {
@@ -977,6 +983,143 @@
         }
       }
     },
+    "plugin-frame": {
+      "title": "frame",
+      "type": "object",
+      "description": "Mark message boundaries on this path. Takes the boundaries it is given, one unit in and one framed unit out, so it belongs on a datagram path or after a stage that declared boundaries of its own. Pair it with an unframe entry on the opposite direction.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "frame",
+          "description": "Selects the frame plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "mode": {
+          "enum": [
+            "delimiter",
+            "cobs",
+            "slip",
+            "length",
+            "netstring"
+          ],
+          "default": "delimiter",
+          "description": "How messages are marked on the wire; both ends of a hop must agree. 'delimiter' terminates each message with the delimiter byte string. 'cobs' and 'slip' escape the payload so the terminator cannot appear in it, which is exact for arbitrary binary; prefer cobs unless the peer requires slip. 'length' prefixes each message with its length in a fixed-width header. 'netstring' wraps each message as LEN:payload, with a decimal length. The counted modes (length, netstring) can refuse an oversized message from its header, but cannot resynchronise a stream once it desynchronises."
+        },
+        "delimiter": {
+          "type": "string",
+          "default": "\\n",
+          "description": "Terminator in delimiter mode. Escapes are decoded here, so \\n, \\r, \\t, \\0, \\\\ and \\xNN all work on the command line as well as in this file. An option another mode ignores is an error rather than a no-op, so this is rejected outside delimiter mode."
+        },
+        "length-bytes": {
+          "enum": [
+            1,
+            2,
+            4,
+            8
+          ],
+          "default": 4,
+          "description": "Width of the header in length mode, in bytes. Rejected outside length mode."
+        },
+        "endian": {
+          "enum": [
+            "big",
+            "little"
+          ],
+          "default": "big",
+          "description": "Byte order of the header in length mode. Big is network order and what a peer means unless it says otherwise. Rejected outside length mode."
+        },
+        "check": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reject a message that would frame as two, because it contains the delimiter or ends with a prefix of one. Costs one scan of each message. Turn it off only for a peer whose parser tolerates the ambiguity. Rejected outside delimiter mode."
+        }
+      }
+    },
+    "plugin-unframe": {
+      "title": "unframe",
+      "type": "object",
+      "description": "Split this path into messages on their boundaries, emitting each as one unit so that every stage below is called once per message. The counterpart to frame, and what a stage that needs whole messages (unbase64, anything with a per-message header) needs ahead of it on a byte stream.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "unframe",
+          "description": "Selects the unframe plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "mode": {
+          "enum": [
+            "delimiter",
+            "cobs",
+            "slip",
+            "length",
+            "netstring"
+          ],
+          "default": "delimiter",
+          "description": "How messages are marked on the wire; both ends of a hop must agree. 'delimiter' terminates each message with the delimiter byte string. 'cobs' and 'slip' escape the payload so the terminator cannot appear in it, which is exact for arbitrary binary; prefer cobs unless the peer requires slip. 'length' prefixes each message with its length in a fixed-width header. 'netstring' wraps each message as LEN:payload, with a decimal length. The counted modes (length, netstring) can refuse an oversized message from its header, but cannot resynchronise a stream once it desynchronises."
+        },
+        "delimiter": {
+          "type": "string",
+          "default": "\\n",
+          "description": "Terminator in delimiter mode. Escapes are decoded here, so \\n, \\r, \\t, \\0, \\\\ and \\xNN all work on the command line as well as in this file. An option another mode ignores is an error rather than a no-op, so this is rejected outside delimiter mode."
+        },
+        "length-bytes": {
+          "enum": [
+            1,
+            2,
+            4,
+            8
+          ],
+          "default": 4,
+          "description": "Width of the header in length mode, in bytes. Rejected outside length mode."
+        },
+        "endian": {
+          "enum": [
+            "big",
+            "little"
+          ],
+          "default": "big",
+          "description": "Byte order of the header in length mode. Big is network order and what a peer means unless it says otherwise. Rejected outside length mode."
+        },
+        "max-message": {
+          "description": "Largest message to accept. A plain byte count or a binary suffix ('64k', '1MiB'). Defaults to 1MiB. 0 removes the limit, which hands a peer whose framing does not match an unbounded allocation. The cap is on one message rather than on the stream, and framing bytes do not count against it. A counted mode refuses an oversized message from its header, before the payload is read.",
+          "default": "1MiB"
+        },
+        "at-eof": {
+          "enum": [
+            "emit",
+            "error",
+            "drop"
+          ],
+          "description": "What to do with bytes left over when the stream ends part way through a message. Defaults to emit in delimiter mode, where a last line without a newline is routine, and to error elsewhere, where a partial frame was cut off in transit. The counted modes (length, netstring) reject emit: what is left is a header and part of a payload, with no message in it."
+        }
+      }
+    },
     "plugin-process": {
       "title": "process",
       "type": "object",
@@ -1146,6 +1289,8 @@
               "decompress",
               "base64",
               "unbase64",
+              "frame",
+              "unframe",
               "process",
               "rate",
               "limit",

@@ -49,6 +49,7 @@ all-plugins = [
   "base64",
   "block",
   "compress",
+  "frame",
   "hash",
   "limit",
   "process",
@@ -62,6 +63,7 @@ all-plugins-no-wasm = [
   "base64",
   "block",
   "compress",
+  "frame",
   "hash",
   "limit",
   "process",
@@ -73,6 +75,7 @@ all-plugins-no-wasm = [
 base64 = ["tocat-plugins/base64"]
 block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
+frame = ["tocat-plugins/frame"]
 hash = ["tocat-plugins/hash"]
 limit = ["tocat-plugins/limit"]
 process = ["tocat-plugins/process"]
