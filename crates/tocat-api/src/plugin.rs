@@ -609,8 +609,9 @@ pub trait Plugin: Send {
     ///
     /// A stage that emits from here is fabricating a message boundary on a
     /// datagram path (the bytes belong to no datagram the peer sent) so it
-    /// should report [`datagram_safe`](Plugin::datagram_safe) as false. A
-    /// stage that only observes need not.
+    /// should report [`Boundaries::Fuse`] from
+    /// [`boundaries`](Plugin::boundaries). A stage that only observes need
+    /// not.
     ///
     /// What is emitted here is one unit unless [`Ctx::boundary`] says
     /// otherwise, exactly as in [`on_bytes`](Plugin::on_bytes).
@@ -624,27 +625,61 @@ pub trait Plugin: Send {
         Ok(())
     }
 
-    /// Whether this stage may sit on a path carrying datagrams.
+    /// What this stage does to the message boundaries passing through it.
     ///
     /// On a byte stream a chunk is an arbitrary slice: a stage may buffer,
     /// split or coalesce freely, and the host is free to do the same. On a
     /// datagram path the chunk *is* the message: one `on_bytes` call per
     /// datagram, and whatever it emits is sent as exactly one datagram. A
     /// stage that buffers across calls, or emits two messages' worth from one,
-    /// silently corrupts the protocol.
+    /// silently corrupts the protocol unless it says so here.
     ///
-    /// [`Ctx::boundary`] makes the second of those sayable rather than silent:
-    /// a stage that emits several units emits several messages. That is still
-    /// a rewrite of the peer's message stream rather than a preservation of
-    /// it, so a stage doing it should say false here and let the host decide
-    /// whether to warn.
+    /// The four answers, in the order a stage usually wants them:
     ///
-    /// Defaults to false because that is the safe answer for a stage that has
-    /// not thought about it, including any plugin loaded from outside this
-    /// binary. A pure observer that only calls `pass_through` can say true;
-    /// anything holding state across calls should not.
-    fn datagram_safe(&self) -> bool {
-        false
+    /// - [`Preserve`](Boundaries::Preserve): one unit in, one unit out. Every
+    ///   observer, and every codec that rewrites a message in place.
+    /// - [`Fuse`](Boundaries::Fuse): the units are gone below this stage.
+    ///   Anything that buffers across calls, splits, coalesces, or emits from a
+    ///   tick.
+    /// - [`Seal`](Boundaries::Seal): as `Preserve`, and the boundary is also
+    ///   written into the payload, so it outlives a stage below that fuses.
+    ///   `frame` and nothing else.
+    /// - [`Split`](Boundaries::Split): the units below are read out of the
+    ///   bytes rather than inherited, so the ones from above do not survive.
+    ///   `unframe` and nothing else.
+    ///
+    /// Defaults to `Fuse` because that is the answer that claims nothing,
+    /// which is the safe one for a stage that has not thought about it,
+    /// including any plugin loaded from outside this binary.
+    ///
+    /// Declaring the truth matters more than declaring safety. `block` fuses
+    /// and says so, and it is still the right stage to reach for when one
+    /// datagram per 1400 bytes is exactly what was wanted: the host warns and
+    /// relays anyway.
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Fuse
+    }
+
+    /// What this stage needs of the path it was placed on.
+    ///
+    /// Unlike [`boundaries`](Plugin::boundaries), which the host only warns
+    /// about, an unmet requirement is a build error: a stage saying this
+    /// cannot do its job at all where it was put.
+    ///
+    /// [`Upstream`](Needs::Upstream) means every call must carry one whole
+    /// message, so boundaries have to arrive from a datagram endpoint or from
+    /// an `unframe`. [`Downstream`](Needs::Downstream) means the units this
+    /// stage emits have to reach a datagram endpoint or a `frame`, or what it
+    /// wrote cannot be read back. The two are separate because the stages
+    /// that want them want opposite ones: a stage that seals a message and
+    /// appends a tag makes its own boundaries and needs them to survive
+    /// downwards, while the stage that verifies and strips that tag needs
+    /// whole messages from above and does not care what happens below it.
+    ///
+    /// Read once, after `build`, alongside `boundaries`. Neither is consulted
+    /// on the per-chunk path.
+    fn needs(&self) -> Needs {
+        Needs::Nothing
     }
 }
 

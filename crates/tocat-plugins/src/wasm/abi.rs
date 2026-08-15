@@ -1,4 +1,4 @@
-//! The guest ABI, version 1.
+//! The guest ABI, version 2.
 //!
 //! The whole ABI is one call in and one struct out. A guest exports plain
 //! functions and a linear memory, and imports nothing at all: no clock, no
@@ -24,7 +24,14 @@
 //! | `tocat_on_eof`           | `()`           | no       | Upstream is finished                             |
 //! | `tocat_on_tick`          | `()`           | no       | The schedule came due                            |
 //! | `tocat_tick_interval_ns` | `() -> i64`    | no       | Requested tick period, 0 for none. Read once     |
-//! | `tocat_datagram_safe`    | `() -> i32`    | no       | Non-zero if boundaries are preserved. Read once  |
+//! | `tocat_boundaries`       | `() -> i32`    | no       | Boundary effect and requirement. Read once       |
+//!
+//! `tocat_boundaries` packs two answers into one word: `TOCAT_BOUNDARIES_*` in
+//! bits 0 and 1 for what the stage does to message boundaries, and
+//! `TOCAT_NEEDS_*` in bits 2 and 3 for what it needs of the path. Zero, which
+//! is what a guest not exporting it is taken to mean, claims nothing and asks
+//! for nothing. Any other bit is a guest built against a later ABI and is
+//! refused at load.
 //!
 //! `tocat_alloc` is an arena, not a heap: the host never frees, writes exactly
 //! `len` bytes, and is free to call it again on the next chunk. Returning one
@@ -87,7 +94,8 @@ use tocat_api::{PluginError, Result};
 pub use tocat_wasm_abi::{
     TOCAT_EMIT_BUFFERED as EMIT_BUFFERED, TOCAT_EMIT_PASSTHROUGH as EMIT_PASSTHROUGH,
     TOCAT_EMIT_PENDING as EMIT_DROP, TOCAT_FLAG_ERROR as FLAG_ERROR, TOCAT_FLAG_HALT as FLAG_HALT,
-    TOCAT_FLAG_PACE as FLAG_PACE, TOCAT_FLAG_REARM as FLAG_REARM,
+    TOCAT_FLAG_PACE as FLAG_PACE, TOCAT_FLAG_REARM as FLAG_REARM, exports::BOUNDARIES,
+    unpack_boundaries,
 };
 
 use super::NAME;

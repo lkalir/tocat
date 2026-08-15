@@ -47,7 +47,9 @@
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tocat_api::{BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Result, Stage};
+use tocat_api::{
+    Boundaries, BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Result, Stage,
+};
 
 pub const NAME: &str = "throttle";
 
@@ -109,8 +111,8 @@ impl Plugin for Throttle {
 
     /// Nothing is buffered, split, coalesced or emitted on a schedule: a
     /// datagram goes out as the datagram it arrived as, just later.
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
     }
 }
 

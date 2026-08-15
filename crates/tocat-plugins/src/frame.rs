@@ -89,7 +89,9 @@
 //! a large message to be accommodated.
 
 use serde::{Deserialize, Serialize};
-use tocat_api::{BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Result, Stage};
+use tocat_api::{
+    Boundaries, BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Result, Stage,
+};
 
 pub const FRAME: &str = "frame";
 pub const UNFRAME: &str = "unframe";
@@ -368,7 +370,7 @@ impl<'de> Deserialize<'de> for Delimiter {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct FrameConfig {
     /// How messages are marked on the wire.
@@ -389,18 +391,6 @@ pub struct FrameConfig {
     /// parser is known to tolerate it, or use a mode where the question cannot
     /// arise.
     pub check: Option<bool>,
-}
-
-impl Default for FrameConfig {
-    fn default() -> Self {
-        Self {
-            mode: FrameMode::default(),
-            delimiter: None,
-            length_bytes: None,
-            endian: None,
-            check: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -755,11 +745,16 @@ impl Plugin for Frame {
         Ok(())
     }
 
-    /// Safe on a datagram path: one message in, one message out. Framing a
-    /// path that is already framed is redundant rather than wrong, and is
-    /// what a datagram source feeding a stream sink wants.
-    fn datagram_safe(&self) -> bool {
-        true
+    /// One message in, one message out, and the boundary is written into the
+    /// payload as well, so it survives a stage below that fuses and a byte
+    /// sink that has no framing of its own. That second half is what makes
+    /// this `Seal` rather than `Preserve`, and it is what a stage needing its
+    /// units delivered is looking for when it scans downwards.
+    ///
+    /// Framing a path that is already framed is redundant rather than wrong,
+    /// and is what a datagram source feeding a stream sink wants.
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Seal
     }
 }
 
@@ -1061,10 +1056,14 @@ impl Plugin for Unframe {
         Ok(())
     }
 
-    // `datagram_safe` is left at its default of false, deliberately: this
-    // stage holds bytes across calls, and the boundaries it emits are the
-    // sender's framing rather than the datagrams the peer sent. On a path that
-    // already has messages there is nothing for it to do.
+    /// This stage holds bytes across calls, and the boundaries it emits are
+    /// the sender's framing rather than the datagrams the peer sent, so units
+    /// from above do not survive it. Scanning the other way it is the answer:
+    /// a stage below needing whole messages gets them from here whatever the
+    /// endpoint above is, which is the point of putting it there.
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Split
+    }
 }
 
 pub struct FrameFactory;
@@ -1768,11 +1767,15 @@ mod tests {
         assert!(build(&UnframeFactory, json!({"size": 4})).is_err());
     }
 
-    /// `frame` preserves the message stream it is given; `unframe` replaces it
-    /// with the sender's framing, which is not the peer's datagrams.
+    /// `frame` preserves the message stream it is given and writes the
+    /// boundary into the payload as well; `unframe` replaces that stream with
+    /// the sender's framing, which is not the peer's datagrams.
     #[test]
-    fn only_frame_is_datagram_safe() {
-        assert!(framer(json!({})).datagram_safe());
-        assert!(!unframer(json!({})).datagram_safe());
+    fn the_pair_seals_and_splits() {
+        assert_eq!(framer(json!({})).boundaries(), Boundaries::Seal);
+        assert_eq!(unframer(json!({})).boundaries(), Boundaries::Split);
+
+        assert!(framer(json!({})).boundaries().preserves_messages());
+        assert!(!unframer(json!({})).boundaries().preserves_messages());
     }
 }

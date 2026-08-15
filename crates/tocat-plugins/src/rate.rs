@@ -41,8 +41,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tocat_api::{
-    BuildCtx, ChannelId, ChannelTarget, Ctx, LogLevel, Plugin, PluginError, PluginFactory, Result,
-    Stage,
+    Boundaries, BuildCtx, ChannelId, ChannelTarget, Ctx, LogLevel, Plugin, PluginError,
+    PluginFactory, Result, Stage,
 };
 
 pub const NAME: &str = "rate";
@@ -398,9 +398,9 @@ impl Plugin for Rate {
         NAME
     }
 
-    fn datagram_safe(&self) -> bool {
+    fn boundaries(&self) -> Boundaries {
         // Pure observer: the payload is forwarded untouched
-        true
+        Boundaries::Preserve
     }
 
     fn on_bytes(&mut self, ctx: &mut Ctx<'_>, input: &[u8]) -> Result<()> {
@@ -691,7 +691,7 @@ mod tests {
         let mut sink = Recorder::default();
 
         assert_eq!(feed(rate.as_mut(), &mut sink, b"ping"), Emit::Passthrough);
-        assert!(rate.datagram_safe());
+        assert_eq!(rate.boundaries(), Boundaries::Preserve);
     }
 
     #[test]

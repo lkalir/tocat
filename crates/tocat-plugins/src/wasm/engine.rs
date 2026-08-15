@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use tocat_api::{PluginError, Result};
+use tocat_api::{Boundaries, Needs, PluginError, Result};
 use wasmtime::{
     Config, Engine, Instance, InstancePre, Linker, Memory, Module, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc, WasmParams, WasmResults,
@@ -143,10 +143,11 @@ pub struct Guest {
     on_eof: Option<TypedFunc<(), ()>>,
     on_tick: Option<TypedFunc<(), ()>>,
 
-    /// Both read once, after `tocat_init`, because that is when the guest
+    /// All read once, after `tocat_init`, because that is when the guest
     /// knows its options and because the host reads them once too.
     tick_interval: Option<Duration>,
-    datagram_safe: bool,
+    boundaries: Boundaries,
+    needs: Needs,
 }
 
 impl Guest {
@@ -194,7 +195,8 @@ impl Guest {
             on_eof: optional(&instance, &mut store, "tocat_on_eof"),
             on_tick: optional(&instance, &mut store, "tocat_on_tick"),
             tick_interval: None,
-            datagram_safe: false,
+            boundaries: Boundaries::Fuse,
+            needs: Needs::Nothing,
             store,
         };
 
@@ -226,10 +228,30 @@ impl Guest {
                 .filter(|nanos| *nanos > 0)
                 .map(Duration::from_nanos);
 
-        guest.datagram_safe =
-            optional::<(), i32>(&instance, &mut guest.store, "tocat_datagram_safe")
-                .and_then(|func| func.call(&mut guest.store, ()).ok())
-                .is_some_and(|safe| safe != 0);
+        // A guest that does not export it claims nothing, which is `Fuse` with
+        // no requirement. One that exports it and answers with a bit this host
+        // does not know was built against a later ABI: refusing beats reading
+        // it as a claim of nothing, since the requirement the host cannot see
+        // is exactly the one it would then fail to enforce.
+        if let Some(func) = optional::<(), i32>(&instance, &mut guest.store, abi::BOUNDARIES) {
+            let raw = func
+                .call(&mut guest.store, ())
+                .map_err(|e| config_error(format!("{}: {e}", abi::BOUNDARIES)))?;
+
+            let (boundaries, needs) = u32::try_from(raw)
+                .ok()
+                .and_then(abi::unpack_boundaries)
+                .ok_or_else(|| {
+                    config_error(format!(
+                        "{} returned {raw}, which this build does not understand: \
+                         the guest was built against a later ABI",
+                        abi::BOUNDARIES,
+                    ))
+                })?;
+
+            guest.boundaries = boundaries;
+            guest.needs = needs;
+        }
 
         Ok(guest)
     }
@@ -241,11 +263,16 @@ impl Guest {
         self.tick_interval.filter(|_| self.on_tick.is_some())
     }
 
-    /// Whether the guest claims to preserve message boundaries. False for a
-    /// guest that does not say, which is the safe answer and the one the trait
-    /// defaults to.
-    pub fn datagram_safe(&self) -> bool {
-        self.datagram_safe
+    /// What the guest claims to do to message boundaries.
+    /// [`Boundaries::Fuse`] for a guest that does not say, which claims
+    /// nothing and is the answer the trait defaults to.
+    pub fn boundaries(&self) -> Boundaries {
+        self.boundaries
+    }
+
+    /// What the guest needs of the path it was placed on.
+    pub fn needs(&self) -> Needs {
+        self.needs
     }
 
     pub fn on_bytes(&mut self, input: &[u8]) -> Result<()> {

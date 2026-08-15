@@ -1,5 +1,5 @@
 /*
- * tocat.h - the guest side of the tocat WebAssembly ABI, version 1.
+ * tocat.h - the guest side of the tocat WebAssembly ABI, version 2.
  *
  * A guest imports nothing. It exports a handful of functions and a linear
  * memory, and everything it wants the host to do is written into a fixed

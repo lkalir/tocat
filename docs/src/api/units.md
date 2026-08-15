@@ -52,13 +52,14 @@ every destination can ignore units entirely.
 
 ## Boundaries and datagrams
 
-A stage declares through `datagram_safe` whether it may sit on a path carrying
-messages. `boundary` is what makes the useful case sayable rather than silent: a
-stage that emits several units emits several messages. That is still a rewrite
-of the peer's message stream rather than a preservation of it, so a stage doing
-it should report false and let the host decide whether to warn.
+A stage declares through `boundaries` what it does to the messages passing
+through it, and through `needs` what it requires of the path. `boundary` is what
+makes the useful case sayable rather than silent: a stage that emits several
+units emits several messages. That is still a rewrite of the peer's message
+stream rather than a preservation of it, so a stage doing it reports `Fuse` and
+lets the host decide whether to warn.
 
-Declaring the truth matters more than declaring safety. `block` is not boundary
-preserving and says so, and it is still the right stage to reach for when one
-datagram per 1400 bytes is exactly what you want. See
+Declaring the truth matters more than declaring safety. `block` fuses and says
+so, and it is still the right stage to reach for when one datagram per 1400
+bytes is exactly what you want. See
 [The datagram model](../design/datagrams.md).

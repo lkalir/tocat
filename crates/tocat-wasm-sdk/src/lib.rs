@@ -9,7 +9,7 @@
 //! ```ignore
 //! #![no_std]
 //!
-//! use tocat_wasm_sdk::{Context, Guest, export_guest};
+//! use tocat_wasm_sdk::{Boundaries, Context, Guest, export_guest};
 //!
 //! pub struct Upper {
 //!     out: [u8; 256 * 1024],
@@ -17,7 +17,7 @@
 //!
 //! impl Guest for Upper {
 //!     const INIT: Self = Self { out: [0; 256 * 1024] };
-//!     const DATAGRAM_SAFE: bool = true;
+//!     const BOUNDARIES: Boundaries = Boundaries::Preserve;
 //!
 //!     fn on_bytes(&mut self, ctx: &mut Context, input: &[u8]) {
 //!         for (out, byte) in self.out.iter_mut().zip(input) {
@@ -62,7 +62,7 @@
 
 use core::time::Duration;
 
-pub use tocat_wasm_abi::{Emit, Level, LogRecord, Outbox, TOCAT_ABI_VERSION};
+pub use tocat_wasm_abi::{Boundaries, Emit, Level, LogRecord, Needs, Outbox, TOCAT_ABI_VERSION};
 use tocat_wasm_abi::{TOCAT_FLAG_ERROR, TOCAT_FLAG_HALT, TOCAT_FLAG_PACE, TOCAT_FLAG_REARM};
 
 /// How many log records one call may queue. Beyond this they are dropped:
@@ -81,14 +81,25 @@ pub trait Guest: Sized {
     /// `__wasm_call_ctors` above.
     const INIT: Self;
 
-    /// Whether this stage preserves message boundaries.
+    /// What this stage does to the message boundaries passing through it.
     ///
-    /// False, the default, is the safe answer: the host warns when a stage
-    /// that may not sit on a path whose destination is a datagram endpoint. A
-    /// stage that emits one unit per call it was given one may say true; one
-    /// that holds bytes across calls or reframes what it was handed may not,
-    /// even when doing that is the point.
-    const DATAGRAM_SAFE: bool = false;
+    /// [`Boundaries::Fuse`], the default, claims nothing, which is the safe
+    /// answer: the host warns about a stage that may not sit on a path whose
+    /// destination is a datagram endpoint. A stage that emits one unit for
+    /// every call it was given one may say [`Boundaries::Preserve`]; one that
+    /// holds bytes across calls or reframes what it was handed may not, even
+    /// when doing that is the point.
+    const BOUNDARIES: Boundaries = Boundaries::Fuse;
+
+    /// What this stage needs of the path it was placed on.
+    ///
+    /// Unlike [`BOUNDARIES`](Guest::BOUNDARIES), which the host only warns
+    /// about, an unmet requirement is a configuration error. Say
+    /// [`Needs::Upstream`] when every call has to carry one whole message, and
+    /// [`Needs::Downstream`] when the units emitted have to reach the far end
+    /// intact. Both are met by a datagram endpoint, or by an `unframe` above
+    /// and a `frame` below.
+    const NEEDS: Needs = Needs::Nothing;
 
     /// A tick period fixed at compile time. See [`Guest::tick_interval`] for
     /// one that comes from options.
@@ -269,6 +280,8 @@ impl Default for Context {
 /// Everything the macro needs that a guest should not have to name.
 #[doc(hidden)]
 pub mod private {
+    use tocat_wasm_abi::pack_boundaries;
+
     use super::{Context, Guest};
 
     /// The host's pointer is an address in our own memory, so this is a cast
@@ -284,6 +297,12 @@ pub mod private {
         }
 
         unsafe { core::slice::from_raw_parts(ptr as usize as *const u8, len as usize) }
+    }
+
+    /// The two boundary answers in the one word the host reads. Both are
+    /// associated constants, so this folds away entirely.
+    pub fn boundaries<G: Guest>() -> i32 {
+        pack_boundaries(G::BOUNDARIES, G::NEEDS) as i32
     }
 
     pub fn tick_interval_ns<G: Guest>(guest: &G) -> i64 {
@@ -409,12 +428,8 @@ macro_rules! export_guest {
         }
 
         #[unsafe(no_mangle)]
-        pub extern "C" fn tocat_datagram_safe() -> i32 {
-            if <$guest as $crate::Guest>::DATAGRAM_SAFE {
-                1
-            } else {
-                0
-            }
+        pub extern "C" fn tocat_boundaries() -> i32 {
+            $crate::private::boundaries::<$guest>()
         }
 
         /// A trap fails the direction, which is the right answer for a stage

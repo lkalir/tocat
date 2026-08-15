@@ -211,7 +211,10 @@ template <typename G>
 concept has_tick_constant = requires { G::tick_interval; };
 
 template <typename G>
-concept declares_datagram_safe = requires { G::datagram_safe; };
+concept declares_boundaries = requires { G::boundaries; };
+
+template <typename G>
+concept declares_needs = requires { G::needs; };
 
 template <guest G> void init(G &g, bytes config) {
     ctx c;
@@ -261,13 +264,29 @@ template <guest G> int64_t tick_interval(const G &g) {
     }
 }
 
-/* False for a guest that does not say, which is the safe answer. */
-template <guest G> constexpr bool datagram_safe() {
-    if constexpr (declares_datagram_safe<G>) {
-        return G::datagram_safe;
-    } else {
-        return false;
+/*
+ * The two boundary answers packed into the one word the host reads: what the
+ * stage does to message boundaries in bits 0 and 1, what it needs of the path
+ * in bits 2 and 3.
+ *
+ * A guest that declares neither answers zero, which claims nothing and asks
+ * for nothing. That is the safe reading, and it is also what the host assumes
+ * of a guest that does not export the function at all.
+ */
+template <guest G> constexpr int32_t boundaries() {
+    uint32_t packed = TOCAT_BOUNDARIES_FUSE | TOCAT_NEEDS_NOTHING;
+
+    if constexpr (declares_boundaries<G>) {
+        packed = (packed & ~(uint32_t)TOCAT_BOUNDARIES_MASK) |
+                 ((uint32_t)G::boundaries & (uint32_t)TOCAT_BOUNDARIES_MASK);
     }
+
+    if constexpr (declares_needs<G>) {
+        packed = (packed & ~(uint32_t)TOCAT_NEEDS_MASK) |
+                 ((uint32_t)G::needs & (uint32_t)TOCAT_NEEDS_MASK);
+    }
+
+    return (int32_t)packed;
 }
 
 } // namespace detail
@@ -279,12 +298,15 @@ template <guest G> constexpr bool datagram_safe() {
  * Defines the arena, the instance, and every export, at namespace scope:
  *
  *     struct Upper {
- *         static constexpr bool datagram_safe = true;
+ *         static constexpr uint32_t boundaries = TOCAT_BOUNDARIES_PRESERVE;
  *
  *         void on_bytes(tocat::ctx &c, tocat::bytes input) { ... }
  *     };
  *
  *     TOCAT_GUEST(Upper, 256 * 1024);
+ *
+ * `boundaries` and `needs` are optional; a guest declaring neither claims
+ * nothing and asks for nothing, which is the safe reading.
  *
  * `init`, `on_eof`, `on_tick` and `tick_interval` are optional and detected.
  * The exports for them are generated either way, which changes nothing the
@@ -326,8 +348,8 @@ template <guest G> constexpr bool datagram_safe() {
         return ::tocat::detail::tick_interval(tocat__guest);                                \
     }                                                                                       \
                                                                                             \
-    TOCAT_EXPORT(tocat_datagram_safe) int32_t tocat_datagram_safe(void) {                   \
-        return ::tocat::detail::datagram_safe<GuestType>() ? 1 : 0;                         \
+    TOCAT_EXPORT(tocat_boundaries) int32_t tocat_boundaries(void) {                         \
+        return ::tocat::detail::boundaries<GuestType>();                                    \
     }
 
 #endif /* TOCAT_HPP */

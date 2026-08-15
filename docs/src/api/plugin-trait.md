@@ -11,7 +11,8 @@ pub trait Plugin: Send {
     fn tick_interval(&self) -> Option<Duration> { None }
     fn on_tick(&mut self, ctx: &mut Ctx<'_>) -> Result<()> { Ok(()) }
 
-    fn datagram_safe(&self) -> bool { false }
+    fn boundaries(&self) -> Boundaries { Boundaries::Fuse }
+    fn needs(&self) -> Needs { Needs::Nothing }
 }
 ```
 
@@ -72,14 +73,41 @@ does a held [`pipe`](../guide/endpoints/pipe.md). A stage whose only output
 happens at `on_eof` therefore produces nothing at all on such a path, which is
 why `rate` reports on a timer as well as in a summary.
 
-## Datagram safety
+## Boundaries
 
-`datagram_safe` is what the host checks when the destination on this path is a
-datagram endpoint, so that it can warn about a stage that may split, merge or
-invent messages. It defaults to false, which is the safe answer for a stage that
-has not thought about it, including any plugin loaded from outside the binary.
+`boundaries` says what the stage does to the messages passing through it, and
+`needs` says what it requires of the path it was placed on. Both are read once
+after `build` and never on the per-chunk path.
 
-A pure observer that only calls `pass_through` can say true. Anything holding
-bytes across calls, emitting on a tick, or reframing what it was given should
-not, even when doing so is the whole point of the stage: the host warns and
-relays anyway, so the honest answer costs nothing.
+| Answer                 | Means                                                           | Who says it                                      |
+| ---------------------- | --------------------------------------------------------------- | ------------------------------------------------ |
+| `Boundaries::Fuse`     | The units above do not reach the stage below                    | The default. `block`, `compress`, `process`      |
+| `Boundaries::Preserve` | One unit in, one unit out                                       | Every observer, and any codec rewriting in place |
+| `Boundaries::Seal`     | As preserve, and the boundary goes into the payload as well     | `frame`, and nothing else                        |
+| `Boundaries::Split`    | The units below are read out of the bytes rather than inherited | `unframe`, and nothing else                      |
+
+`Fuse` is the default because it claims nothing, which is the safe answer for a
+stage that has not thought about it, including any plugin loaded from outside
+the binary. A pure observer that only calls `pass_through` can say `Preserve`.
+Anything holding bytes across calls, emitting on a tick, or reframing what it
+was given should not, even when doing so is the whole point of the stage: the
+host warns and relays anyway, so the honest answer costs nothing.
+
+The difference between the two methods is the difference between a warning and
+an error. `boundaries` is advisory, because rewriting the message stream is
+sometimes exactly what was asked for. `needs` is not: a stage saying
+`Needs::Upstream` cannot read what arrives unless every call carries one whole
+message, and one saying `Needs::Downstream` cannot have what it wrote read back
+unless the units it emitted survive. Neither is a matter of taste, so an unmet
+requirement fails the build.
+
+The two sides are separate because the stages that want them want opposite ones.
+A stage that seals a message and appends a tag makes its own boundaries and
+needs them to survive downwards; the stage that verifies and strips that tag
+needs whole messages from above and does not care what happens below it.
+
+The host answers a requirement by walking away from the stage until something
+settles it. A datagram endpoint on that side supplies boundaries, a `frame`
+below satisfies a downstream requirement however many stages fuse under it, an
+`unframe` above satisfies an upstream one, and the first stage that carries
+neither is named as the cause.

@@ -24,7 +24,8 @@ use std::{fmt::Write as _, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tocat_api::{
-    BuildCtx, ChannelId, ChannelTarget, Ctx, Plugin, PluginError, PluginFactory, Result, Stage,
+    Boundaries, BuildCtx, ChannelId, ChannelTarget, Ctx, Plugin, PluginError, PluginFactory,
+    Result, Stage,
 };
 
 pub const NAME: &str = "tee";
@@ -125,9 +126,9 @@ impl Plugin for Tee {
         NAME
     }
 
-    fn datagram_safe(&self) -> bool {
+    fn boundaries(&self) -> Boundaries {
         // Pure observer. The payload is forwarded untouched
-        true
+        Boundaries::Preserve
     }
 
     fn on_bytes(&mut self, ctx: &mut Ctx<'_>, input: &[u8]) -> Result<()> {

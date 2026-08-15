@@ -53,8 +53,8 @@ use crate::{
     error::{PluginError, Result},
     normalize,
     plugin::{
-        BuildCtx, Ctx, EffectSink, Emission, Emit, Execution, ExternalStage, PipelineMeta, Plugin,
-        PluginFactory, Stage, StageInfo,
+        Boundaries, BuildCtx, Ctx, EffectSink, Emission, Emit, Execution, ExternalStage, Needs,
+        PipelineMeta, Plugin, PluginFactory, Stage, StageInfo,
     },
 };
 
@@ -368,8 +368,23 @@ impl Pipeline {
         self.stages
             .iter()
             .zip(&self.names)
-            .find(|(stage, _)| !stage.datagram_safe())
+            .find(|(stage, _)| !stage.boundaries().preserves_messages())
             .map(|(_, name)| name.as_str())
+    }
+
+    /// What every stage does to boundaries and what it needs of them, in order.
+    ///
+    /// Read once at build time. A [`Chain`] folds these across its segments to
+    /// answer whether each requiring stage got what it asked for.
+    pub fn declarations(&self) -> impl Iterator<Item = Declaration<'_>> {
+        self.stages
+            .iter()
+            .zip(&self.names)
+            .map(|(stage, name)| Declaration {
+                stage: name.as_str(),
+                boundaries: stage.boundaries(),
+                needs: stage.needs(),
+            })
     }
 
     /// Push one chunk through every stage.
@@ -632,6 +647,45 @@ pub enum Segment {
     Process(ExternalStage),
 }
 
+/// What one stage declared about message boundaries, and what it is called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Declaration<'a> {
+    pub stage: &'a str,
+    pub boundaries: Boundaries,
+    pub needs: Needs,
+}
+
+/// Which way a stage was looking when its requirement went unmet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    /// The stage needs whole messages arriving.
+    Upstream,
+    /// The stage needs the units it emits to survive.
+    Downstream,
+}
+
+impl Side {
+    /// How to describe the far end in a message about this side.
+    #[must_use]
+    pub fn endpoint_role(self) -> &'static str {
+        match self {
+            Self::Upstream => "source",
+            Self::Downstream => "destination",
+        }
+    }
+}
+
+/// A stage placed where it cannot work.
+///
+/// `cause` names the stage that destroyed the boundaries, or `None` when
+/// nothing in the chain did and the endpoint itself is the byte stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundaryFault<'a> {
+    pub stage: &'a str,
+    pub side: Side,
+    pub cause: Option<&'a str>,
+}
+
 /// Data processing chain.
 #[derive(Debug)]
 pub struct Chain {
@@ -676,6 +730,107 @@ impl Chain {
             Segment::Inline(pipeline) => pipeline.datagram_hazard(),
             Segment::Process(external) => Some(external.name.as_str()),
         })
+    }
+
+    /// Every stage's boundary declaration, flattened across segments.
+    ///
+    /// A detached subprocess is [`Boundaries::Fuse`] whatever it runs: its
+    /// stdin and stdout are byte streams, so units do not cross the pipe.
+    #[must_use]
+    pub fn declarations(&self) -> Vec<Declaration<'_>> {
+        self.segments
+            .iter()
+            .flat_map(|segment| match segment {
+                Segment::Inline(pipeline) => pipeline.declarations().collect::<Vec<_>>(),
+                Segment::Process(external) => vec![Declaration {
+                    stage: external.name.as_str(),
+                    boundaries: Boundaries::Fuse,
+                    needs: Needs::Nothing,
+                }],
+            })
+            .collect()
+    }
+
+    /// Every stage on this chain whose requirement the path does not meet.
+    ///
+    /// Each requiring stage is checked by walking away from it towards the end
+    /// it named. The scan stops at the first stage that settles the question:
+    /// a `frame` below satisfies a downstream requirement however many stages
+    /// fuse under it, an `unframe` above satisfies an upstream one, and a stage
+    /// that does not carry units in the direction of travel is the fault. A
+    /// scan that reaches the end of the chain is answered by the endpoint,
+    /// which carries messages only when it is a datagram endpoint.
+    ///
+    /// Both flags are oriented for this chain's direction: `upstream` is the
+    /// endpoint it reads from and `downstream` the one it writes to.
+    #[must_use]
+    pub fn boundary_faults(
+        &self,
+        upstream_datagram: bool,
+        downstream_datagram: bool,
+    ) -> Vec<BoundaryFault<'_>> {
+        let declarations = self.declarations();
+        let mut faults = Vec::new();
+
+        for (index, declaration) in declarations.iter().enumerate() {
+            if declaration.needs.downstream() {
+                let cause = declarations[index + 1..]
+                    .iter()
+                    .find(|below| !below.boundaries.passes_downstream())
+                    .map(|below| {
+                        if below.boundaries.satisfies_downstream() {
+                            None
+                        } else {
+                            Some(below.stage)
+                        }
+                    });
+
+                match cause {
+                    // Nothing below settles it, so the endpoint answers.
+                    None if !downstream_datagram => faults.push(BoundaryFault {
+                        stage: declaration.stage,
+                        side: Side::Downstream,
+                        cause: None,
+                    }),
+                    Some(Some(stage)) => faults.push(BoundaryFault {
+                        stage: declaration.stage,
+                        side: Side::Downstream,
+                        cause: Some(stage),
+                    }),
+                    _ => {}
+                }
+            }
+
+            if declaration.needs.upstream() {
+                let cause = declarations[..index]
+                    .iter()
+                    .rev()
+                    .find(|above| !above.boundaries.passes_upstream())
+                    .map(|above| {
+                        if above.boundaries.satisfies_upstream() {
+                            None
+                        } else {
+                            Some(above.stage)
+                        }
+                    });
+
+                match cause {
+                    None if !upstream_datagram => faults.push(BoundaryFault {
+                        stage: declaration.stage,
+                        side: Side::Upstream,
+                        cause: None,
+                    }),
+                    Some(Some(stage)) => faults.push(BoundaryFault {
+                        stage: declaration.stage,
+                        side: Side::Upstream,
+                        cause: Some(stage),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+
+        faults
     }
 
     #[must_use]
@@ -907,7 +1062,10 @@ impl fmt::Debug for Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChannelId, DirectionSpec, plugin::LogLevel};
+    use crate::{
+        ChannelId, DirectionSpec,
+        plugin::{LogLevel, StderrMode},
+    };
 
     #[derive(Default)]
     struct Recorder {
@@ -952,6 +1110,53 @@ mod tests {
             ctx.forward(&upper);
             Ok(())
         }
+    }
+
+    /// Declares boundaries and needs, and does nothing else. The scans read
+    /// only what a stage declared, so a fault test needs no bytes at all.
+    struct Declares {
+        name: &'static str,
+        boundaries: Boundaries,
+        needs: Needs,
+    }
+
+    impl Declares {
+        fn boxed(name: &'static str, boundaries: Boundaries, needs: Needs) -> Box<dyn Plugin> {
+            Box::new(Self {
+                name,
+                boundaries,
+                needs,
+            })
+        }
+    }
+
+    impl Plugin for Declares {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn on_bytes(&mut self, ctx: &mut Ctx<'_>, _input: &[u8]) -> Result<()> {
+            ctx.pass_through();
+            Ok(())
+        }
+
+        fn boundaries(&self) -> Boundaries {
+            self.boundaries
+        }
+
+        fn needs(&self) -> Needs {
+            self.needs
+        }
+    }
+
+    /// One inline segment of declaring stages, named after what they declare.
+    fn declaring(stages: Vec<Box<dyn Plugin>>) -> Chain {
+        let names = stages.iter().map(|s| s.name().to_owned()).collect();
+
+        Chain::new(
+            meta(),
+            vec![Segment::Inline(Pipeline::with_names(meta(), stages, names))],
+        )
     }
 
     /// Buffers everything, emits it reversed at EOF.
@@ -1485,5 +1690,174 @@ mod tests {
 
         assert!(p.process(b"abcd", &mut sink).unwrap().is_empty());
         assert_eq!(p.finish(&mut sink).unwrap().bytes(), b"dcba");
+    }
+    // ------------------------------------------------------------------
+    // Boundary declarations
+    //
+    // Two scans, one per side, each walking away from the requiring stage
+    // until something settles the question. `frame` seals and settles a
+    // downstream scan; `unframe` splits and settles an upstream one; anything
+    // that fuses is the fault; reaching the end hands the question to the
+    // endpoint.
+
+    fn seal() -> Box<dyn Plugin> {
+        Declares::boxed("frame", Boundaries::Seal, Needs::Nothing)
+    }
+
+    fn split() -> Box<dyn Plugin> {
+        Declares::boxed("unframe", Boundaries::Split, Needs::Nothing)
+    }
+
+    fn fuse() -> Box<dyn Plugin> {
+        Declares::boxed("compress", Boundaries::Fuse, Needs::Nothing)
+    }
+
+    fn preserve() -> Box<dyn Plugin> {
+        Declares::boxed("hash", Boundaries::Preserve, Needs::Nothing)
+    }
+
+    fn needs_below() -> Box<dyn Plugin> {
+        Declares::boxed("needs-below", Boundaries::Preserve, Needs::Downstream)
+    }
+
+    fn needs_above() -> Box<dyn Plugin> {
+        Declares::boxed("needs-above", Boundaries::Preserve, Needs::Upstream)
+    }
+
+    #[test]
+    fn a_datagram_endpoint_answers_a_requirement_by_itself() {
+        assert!(
+            declaring(vec![needs_below()])
+                .boundary_faults(false, true)
+                .is_empty(),
+            "a datagram sink carries whatever units it was handed",
+        );
+        assert!(
+            declaring(vec![needs_above()])
+                .boundary_faults(true, false)
+                .is_empty(),
+            "a datagram source delivers whole messages",
+        );
+    }
+
+    #[test]
+    fn a_byte_endpoint_does_not_and_says_which_one() {
+        let binding = declaring(vec![needs_below()]);
+        let faults = binding.boundary_faults(true, false);
+
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].stage, "needs-below");
+        assert_eq!(faults[0].side, Side::Downstream);
+        assert_eq!(faults[0].cause, None, "no stage broke it; the endpoint did");
+
+        let binding = declaring(vec![needs_above()]);
+        let faults = binding.boundary_faults(false, true);
+
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].side, Side::Upstream);
+    }
+
+    /// The composition the `frame` pair exists for, and the reason a
+    /// downstream scan stops at a seal rather than folding past it.
+    #[test]
+    fn framing_satisfies_a_requirement_a_stream_endpoint_would_not() {
+        let chain = declaring(vec![needs_below(), seal()]);
+        assert!(chain.boundary_faults(false, false).is_empty());
+
+        let chain = declaring(vec![split(), needs_above()]);
+        assert!(chain.boundary_faults(false, false).is_empty());
+    }
+
+    /// A seal below covers everything under it, because the boundary is in the
+    /// payload by then and no later stage can lose it.
+    #[test]
+    fn a_seal_covers_a_fuse_beneath_it() {
+        let chain = declaring(vec![needs_below(), seal(), fuse()]);
+
+        assert!(chain.boundary_faults(false, false).is_empty());
+    }
+
+    /// The same two stages the other way round, which is the mistake this
+    /// check exists to catch: the units are gone before the seal sees them.
+    #[test]
+    fn a_fuse_before_the_seal_is_a_fault_that_names_it() {
+        let binding = declaring(vec![needs_below(), fuse(), seal()]);
+        let faults = binding.boundary_faults(false, false);
+
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].stage, "needs-below");
+        assert_eq!(faults[0].cause, Some("compress"));
+    }
+
+    /// Passing stages are walked through rather than counted against.
+    #[test]
+    fn preserving_stages_do_not_settle_a_scan_either_way() {
+        let chain = declaring(vec![split(), preserve(), needs_above(), preserve(), seal()]);
+
+        assert!(chain.boundary_faults(false, false).is_empty());
+    }
+
+    /// A split below a requiring stage re-cuts the bytes by the sender's
+    /// framing, so the units from above do not reach the far end.
+    #[test]
+    fn a_split_below_does_not_carry_units_from_above() {
+        let binding = declaring(vec![needs_below(), split()]);
+        let faults = binding.boundary_faults(false, false);
+
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].cause, Some("unframe"));
+    }
+
+    /// Scanning upwards, a seal is transparent: it emits one unit for every
+    /// unit it was given, so what is above it still arrives.
+    #[test]
+    fn a_seal_above_is_transparent_to_an_upstream_scan() {
+        let chain = declaring(vec![split(), seal(), needs_above()]);
+        assert!(chain.boundary_faults(false, false).is_empty());
+
+        let binding = declaring(vec![seal(), needs_above()]);
+        let faults = binding.boundary_faults(false, false);
+        assert_eq!(
+            faults.len(),
+            1,
+            "nothing above the seal supplies boundaries"
+        );
+        assert_eq!(faults[0].cause, None);
+    }
+
+    /// A subprocess is a pair of byte streams whatever it runs, so it fuses.
+    #[test]
+    fn a_detached_process_fuses() {
+        let chain = Chain::new(
+            meta(),
+            vec![
+                Segment::Inline(Pipeline::with_names(
+                    meta(),
+                    vec![needs_below()],
+                    vec!["needs-below".to_owned()],
+                )),
+                Segment::Process(ExternalStage {
+                    argv: vec!["cat".to_owned()],
+                    shell: false,
+                    stderr: StderrMode::Log,
+                    name: "process".to_owned(),
+                }),
+            ],
+        );
+
+        let faults = chain.boundary_faults(true, true);
+
+        assert_eq!(faults.len(), 1);
+        assert_eq!(faults[0].cause, Some("process"));
+    }
+
+    /// The warning and the error are separate questions over the same
+    /// declarations: sealing rewrites a datagram without splitting it.
+    #[test]
+    fn only_fusing_and_splitting_are_datagram_hazards() {
+        assert_eq!(declaring(vec![preserve()]).datagram_hazard(), None);
+        assert_eq!(declaring(vec![seal()]).datagram_hazard(), None);
+        assert_eq!(declaring(vec![fuse()]).datagram_hazard(), Some("compress"));
+        assert_eq!(declaring(vec![split()]).datagram_hazard(), Some("unframe"));
     }
 }

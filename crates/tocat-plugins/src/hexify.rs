@@ -11,8 +11,8 @@
 //! happen to land on a byte boundary.
 //!
 //! That contract is the datagram contract, so both stages report
-//! [`datagram_safe`](Plugin::datagram_safe) as true: one call in, one unit
-//! out, nothing carried across.
+//! [`Boundaries::Preserve`]: one call in, one unit out, nothing carried
+//! across.
 //!
 //! The failure is loud rather than silent: an odd-length message is a
 //! build-your-pipeline-differently error naming `unframe`, not a corrupt
@@ -66,7 +66,9 @@
 //! greppable on the wire, which is the usual reason to pay it.
 
 use serde::{Deserialize, Serialize};
-use tocat_api::{BuildCtx, Ctx, Plugin, PluginError, PluginFactory, Result, Stage};
+use tocat_api::{
+    Boundaries, BuildCtx, Ctx, Needs, Plugin, PluginError, PluginFactory, Result, Stage,
+};
 
 pub const HEXIFY: &str = "hexify";
 pub const UNHEXIFY: &str = "unhexify";
@@ -164,8 +166,8 @@ impl Plugin for Hexify {
 
     /// Safe on a datagram path: one message in, one message out, no state
     /// carried between calls.
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
     }
 }
 
@@ -188,7 +190,7 @@ impl Plugin for Unhexify {
 
         // `hex` would reject this too, but with a message about digits rather
         // than about the framing that is actually missing.
-        if input.len() % 2 != 0 {
+        if !input.len().is_multiple_of(2) {
             return Err(PluginError::runtime(UNHEXIFY, MISFRAMED));
         }
 
@@ -201,8 +203,12 @@ impl Plugin for Unhexify {
 
     /// Safe on a datagram path: one message in, one message out, no state
     /// carried between calls.
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
+    }
+
+    fn needs(&self) -> Needs {
+        Needs::Upstream
     }
 }
 
@@ -487,14 +493,14 @@ mod tests {
     }
 
     /// The guide says both stages may sit on a datagram path, which is only
-    /// true if they say so themselves: the trait defaults to false.
+    /// true if they say so themselves: the trait defaults to fusing.
     #[test]
-    fn both_stages_are_datagram_safe() {
+    fn both_stages_preserve_boundaries() {
         let encoder = build(&HexifyFactory, json!({}));
         let decoder = build(&UnhexifyFactory, json!({}));
 
-        assert!(encoder.datagram_safe());
-        assert!(decoder.datagram_safe());
+        assert_eq!(encoder.boundaries(), Boundaries::Preserve);
+        assert_eq!(decoder.boundaries(), Boundaries::Preserve);
     }
 
     #[test]

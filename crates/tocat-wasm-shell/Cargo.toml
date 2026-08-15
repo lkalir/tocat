@@ -12,4 +12,7 @@ license.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 rustyline = "18.0.1"
+# The shell reports what a guest declared, so it decodes the declaration with
+# the same code the host does rather than a second copy of the bit layout.
+tocat-wasm-abi = { workspace = true }
 wasmtime = { workspace = true }

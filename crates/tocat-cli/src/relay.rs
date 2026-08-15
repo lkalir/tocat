@@ -34,7 +34,7 @@ use std::{
 };
 
 use anyhow::Context;
-use tocat_api::{Chain, ChannelTarget, Direction as Flow, PluginSpec, Registry};
+use tocat_api::{Chain, ChannelTarget, Direction as Flow, PluginSpec, Registry, Side};
 use tokio::{
     net::{TcpListener, UnixListener},
     sync::Semaphore,
@@ -206,25 +206,61 @@ impl Relay {
             "plugin chains resolved",
         );
 
-        // A stage that reshapes byttes cannot preserve message boundaries, so a
-        // datagram *sink* may receive well-formed messages containing nonsense. Warn
-        // rather than refuse: the operator may know the peer tolerates it.
+        // Two checks over the same declarations, and the difference between
+        // them is the whole point. A stage that reshapes bytes cannot preserve
+        // message boundaries, so a datagram *sink* may receive well-formed
+        // messages containing nonsense: warn, because the operator may know the
+        // peer tolerates it, and `block` at the MTU is a reasonable ask.
         //
-        // Checked per direction against that direction's downstream end. A datagram
-        // source feeding a stream sink loses nothing
-        for (chain, downstream, direction) in [
-            (&forward, &sink, "source-to-sink"),
-            (&reverse, &source, "sink-to-source"),
+        // A stage that *needs* boundaries is not in that position. It cannot do
+        // its job where it was put, whatever the peer tolerates, so an unmet
+        // requirement fails the build.
+        //
+        // Both are checked per direction, against that direction's own ends. A
+        // datagram source feeding a stream sink loses nothing.
+        let mut faults = Vec::new();
+
+        for (chain, upstream, downstream, direction) in [
+            (&forward, &source, &sink, "source-to-sink"),
+            (&reverse, &sink, &source, "sink-to-source"),
         ] {
             if downstream.is_datagram()
                 && let Some(stage) = chain.datagram_hazard()
             {
                 warn!(
                     stage, direction, endpoint = %downstream.name(),
-                    "stage may not preserve message boundaries; datagrams send to this endpoint \
+                    "stage may not preserve message boundaries; datagrams sent to this endpoint \
                     may be split, merged, or malformed",
                 );
             }
+
+            for fault in chain.boundary_faults(upstream.is_datagram(), downstream.is_datagram()) {
+                let (want, remedy, end) = match fault.side {
+                    Side::Upstream => ("arriving", "an unframe above it", upstream),
+                    Side::Downstream => ("to survive", "a frame below it", downstream),
+                };
+
+                // Naming what broke it is the difference between a message an
+                // operator can act on and one that only says no.
+                let cause = match fault.cause {
+                    Some(stage) => format!("{stage} does not carry them"),
+                    None => format!(
+                        "the {} {} is a byte stream",
+                        fault.side.endpoint_role(),
+                        end.name(),
+                    ),
+                };
+
+                faults.push(format!(
+                    "{} on {direction} needs message boundaries {want}, and {cause}: put {remedy}, \
+                     or use a stage that does not need them",
+                    fault.stage,
+                ));
+            }
+        }
+
+        if !faults.is_empty() {
+            anyhow::bail!("{}", faults.join("\n"));
         }
 
         plan.freeze();

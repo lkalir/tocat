@@ -12,7 +12,7 @@
  *
  * A unit is one write at a byte sink and one datagram at a datagram sink, so
  * this turns a stream into one message per line. That is also why it does not
- * declare itself datagram safe: the boundaries it emits are its own.
+ * declare itself boundary preserving: the boundaries it emits are its own.
  */
 
 #include <tocat/tocat.hpp>
@@ -250,7 +250,7 @@ struct Lines {
 };
 
 /*
- * `datagram_safe` is deliberately not declared. A guest that says nothing is
+ * `boundaries` is deliberately not declared. A guest that says nothing is
  * assumed unsafe, and this one is: it holds bytes across calls and the
  * boundaries it emits are its own rather than the ones a peer sent. tocat
  * warns and relays anyway, since one datagram per line is a reasonable thing

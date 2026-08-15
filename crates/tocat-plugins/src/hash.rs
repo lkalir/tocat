@@ -46,7 +46,8 @@ use std::{fmt::Write, path::PathBuf};
 use digest::{Digest as Dig, DynDigest};
 use serde::{Deserialize, Serialize};
 use tocat_api::{
-    BuildCtx, ChannelId, ChannelTarget, Ctx, Plugin, PluginError, PluginFactory, Result, Stage,
+    Boundaries, BuildCtx, ChannelId, ChannelTarget, Ctx, Plugin, PluginError, PluginFactory,
+    Result, Stage,
 };
 
 pub const NAME: &str = "hash";
@@ -270,8 +271,8 @@ impl Plugin for Hash {
     }
 
     /// Safe on a datagram path since hashing a message does not change it
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
     }
 }
 

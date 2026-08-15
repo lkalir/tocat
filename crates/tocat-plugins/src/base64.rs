@@ -11,8 +11,8 @@
 //! decode whatever prefix happens to be group-aligned and reject the rest.
 //!
 //! That contract is the datagram contract, so both stages report
-//! [`datagram_safe`](Plugin::datagram_safe) as true: one call in, one unit
-//! out, nothing carried across.
+//! [`Boundaries::Preserve`]: one call in, one unit out, nothing carried
+//! across.
 //!
 //! The failure is loud rather than silent: a message whose length is not a
 //! whole number of groups is a build-your-pipeline-differently error naming
@@ -66,7 +66,9 @@ use ::base64::{
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE, Engine},
 };
 use serde::{Deserialize, Serialize};
-use tocat_api::{BuildCtx, Ctx, Plugin, PluginError, PluginFactory, Result, Stage};
+use tocat_api::{
+    Boundaries, BuildCtx, Ctx, Needs, Plugin, PluginError, PluginFactory, Result, Stage,
+};
 
 pub const BASE64: &str = "base64";
 pub const UNBASE64: &str = "unbase64";
@@ -168,8 +170,8 @@ impl Plugin for Base64 {
 
     /// Safe on a datagram path: one message in, one message out, no state
     /// carried between calls.
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
     }
 }
 
@@ -241,8 +243,12 @@ impl Plugin for Unbase64 {
 
     /// Safe on a datagram path: one message in, one message out, no state
     /// carried between calls.
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
+    }
+
+    fn needs(&self) -> Needs {
+        Needs::Upstream
     }
 }
 
@@ -458,14 +464,14 @@ mod tests {
     }
 
     /// The guide says both stages may sit on a datagram path, which is only
-    /// true if they say so themselves: the trait defaults to false.
+    /// true if they say so themselves: the trait defaults to fusing.
     #[test]
-    fn both_stages_are_datagram_safe() {
+    fn both_stages_preserve_boundaries() {
         let encoder = build(&Base64Factory, json!({}));
         let decoder = build(&Unbase64Factory, json!({}));
 
-        assert!(encoder.datagram_safe());
-        assert!(decoder.datagram_safe());
+        assert_eq!(encoder.boundaries(), Boundaries::Preserve);
+        assert_eq!(decoder.boundaries(), Boundaries::Preserve);
     }
 
     #[test]

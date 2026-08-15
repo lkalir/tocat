@@ -15,7 +15,7 @@
 //! Nothing here ends one. A datagram source has no close to observe, so a
 //! session runs until a stage stops it, which is what the `timeout` plugin is
 //! for: it is already the thing that ends a path that has gone quiet, it is
-//! already `datagram_safe`, and its halt is already the early end of stream
+//! already boundary preserving, and its halt is already the early end of stream
 //! that cascades `on_eof` and closes the path down normally. Growing a second
 //! idle timer here would have been the same feature with a different name and
 //! a different set of bugs.

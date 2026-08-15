@@ -15,7 +15,7 @@ looks for.
 ```rust,ignore
 #![no_std]
 
-use tocat_wasm_sdk::{Context, Guest, export_guest};
+use tocat_wasm_sdk::{Boundaries, Context, Guest, export_guest};
 
 pub struct Upper {
     out: [u8; CAPACITY],
@@ -23,7 +23,7 @@ pub struct Upper {
 
 impl Guest for Upper {
     const INIT: Self = Self { out: [0; CAPACITY] };
-    const DATAGRAM_SAFE: bool = true;
+    const BOUNDARIES: Boundaries = Boundaries::Preserve;
 
     fn on_bytes(&mut self, ctx: &mut Context, input: &[u8]) {
         for (out, byte) in self.out.iter_mut().zip(input) {

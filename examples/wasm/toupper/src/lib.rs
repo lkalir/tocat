@@ -10,7 +10,7 @@
 
 #![no_std]
 
-use tocat_wasm_sdk::{Context, Guest, export_guest};
+use tocat_wasm_sdk::{Boundaries, Context, Guest, export_guest};
 
 /// The most a chunk may be, which has to be at or above the relay's copy
 /// buffer (256 KiB by default) or the relay has to be run with a matching
@@ -30,9 +30,9 @@ impl Guest for ToUpper {
     const INIT: Self = Self { out: [0; CAPACITY] };
 
     /// One message in, one message out, and nothing is held across calls, so
-    /// this is safe on a datagram path. A guest that says nothing is assumed
-    /// unsafe, which is the right default and the wrong answer here.
-    const DATAGRAM_SAFE: bool = true;
+    /// this preserves boundaries. A guest that says nothing claims nothing,
+    /// which is the right default and the wrong answer here.
+    const BOUNDARIES: Boundaries = Boundaries::Preserve;
 
     fn on_bytes(&mut self, ctx: &mut Context, input: &[u8]) {
         for (out, byte) in self.out.iter_mut().zip(input) {

@@ -17,7 +17,7 @@ line_length = 78
 tab_width = 4
 
 header = """/*
- * The tocat WebAssembly guest ABI, version 1.
+ * The tocat WebAssembly guest ABI, version 2.
  *
  * Generated from crates/tocat-wasm-abi by cbindgen. Do not edit: run
  *
@@ -40,6 +40,8 @@ include = [
 exclude = [
   "Emit",
   "Level",
+  "Boundaries",
+  "Needs",
   "MEMORY",
   "ABI_VERSION",
   "OUTBOX",
@@ -49,7 +51,7 @@ exclude = [
   "ON_EOF",
   "ON_TICK",
   "TICK_INTERVAL_NS",
-  "DATAGRAM_SAFE",
+  "BOUNDARIES",
 ]
 
 [export.rename]

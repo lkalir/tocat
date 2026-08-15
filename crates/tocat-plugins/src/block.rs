@@ -144,12 +144,12 @@ impl Plugin for Block {
         Ok(())
     }
 
-    // `datagram_safe` is left at its default of false, deliberately: this
-    // stage holds bytes across calls and the boundaries it emits are its own
-    // rather than the ones the peer sent, so on a datagram path it rewrites
-    // the message stream. That is sometimes exactly what is wanted (`block` at
-    // the MTU is a reasonable thing to ask for) which is why the host warns
-    // rather than refuses.
+    // `boundaries` is left at its default of `Fuse`, deliberately: this stage
+    // holds bytes across calls and the boundaries it emits are its own rather
+    // than the ones the peer sent, so on a datagram path it rewrites the
+    // message stream. That is sometimes exactly what is wanted (`block` at the
+    // MTU is a reasonable thing to ask for) which is why the host warns rather
+    // than refuses.
 }
 
 pub struct BlockFactory;
@@ -197,8 +197,8 @@ impl PluginFactory for BlockFactory {
 mod tests {
     use serde_json::{Map, Value, json};
     use tocat_api::{
-        ChannelId, ChannelTarget, Direction, EffectSink, Emission, Emit, HostBuilder, LogLevel,
-        PipelineMeta, StageInfo,
+        Boundaries, ChannelId, ChannelTarget, Direction, EffectSink, Emission, Emit, HostBuilder,
+        LogLevel, PipelineMeta, StageInfo,
     };
 
     use super::*;
@@ -493,7 +493,7 @@ mod tests {
     /// Buffering across calls and inventing boundaries is exactly what a
     /// datagram path cannot have done to it silently.
     #[test]
-    fn block_is_not_datagram_safe() {
-        assert!(!built(json!({})).datagram_safe());
+    fn block_fuses_the_boundaries_it_was_given() {
+        assert_eq!(built(json!({})).boundaries(), Boundaries::Fuse);
     }
 }

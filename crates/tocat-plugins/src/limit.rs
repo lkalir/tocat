@@ -48,7 +48,7 @@
 //! a corrupt message rather than a short read.
 
 use serde::{Deserialize, Serialize};
-use tocat_api::{BuildCtx, ByteSize, Ctx, Plugin, PluginFactory, Result, Stage};
+use tocat_api::{Boundaries, BuildCtx, ByteSize, Ctx, Plugin, PluginFactory, Result, Stage};
 
 pub const NAME: &str = "limit";
 
@@ -160,8 +160,12 @@ impl Plugin for Limit {
     /// Safe on a datagram path unless the mode splits a message. Stopping
     /// between datagrams is a short transfer; stopping inside one is a
     /// corrupt message.
-    fn datagram_safe(&self) -> bool {
-        !self.at_limit.splits()
+    fn boundaries(&self) -> Boundaries {
+        if self.at_limit.splits() {
+            Boundaries::Fuse
+        } else {
+            Boundaries::Preserve
+        }
     }
 }
 
@@ -360,9 +364,21 @@ mod tests {
 
     #[test]
     fn splitting_is_what_makes_it_unsafe_on_datagrams() {
-        assert!(!build(json!({"bytes": 8})).datagram_safe(), "exact splits");
-        assert!(build(json!({"bytes": 8, "at-limit": "drop"})).datagram_safe());
-        assert!(build(json!({"bytes": 8, "at-limit": "overshoot"})).datagram_safe());
+        let boundaries = |config| build(config).boundaries();
+
+        assert_eq!(
+            boundaries(json!({"bytes": 8})),
+            Boundaries::Fuse,
+            "exact splits",
+        );
+        assert_eq!(
+            boundaries(json!({"bytes": 8, "at-limit": "drop"})),
+            Boundaries::Preserve,
+        );
+        assert_eq!(
+            boundaries(json!({"bytes": 8, "at-limit": "overshoot"})),
+            Boundaries::Preserve,
+        );
     }
 
     #[test]

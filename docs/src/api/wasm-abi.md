@@ -3,7 +3,7 @@
 A WebAssembly guest is a plugin like any other: the
 [`wasm`](../guide/plugins/wasm.md) stage implements [`Plugin`](plugin-trait.md)
 by forwarding each call into the module and applying what comes back. This page
-is the guest half of that contract, ABI version 1.
+is the guest half of that contract, ABI version 2.
 
 The whole ABI is one call in and one struct out. **A guest imports nothing.**
 There are no host functions to link against, which is why a module built against
@@ -13,28 +13,55 @@ else for the host, so there is nothing left for a guest to import.
 
 ## Exports
 
-| Export                   | Signature      | Required | Meaning                                         |
-| ------------------------ | -------------- | -------- | ----------------------------------------------- |
-| `memory`                 | memory         | yes      | The guest's linear memory                       |
-| `tocat_abi_version`      | `() -> i32`    | yes      | Must be 1                                       |
-| `tocat_outbox`           | `() -> i32`    | yes      | Pointer to the outbox                           |
-| `tocat_alloc`            | `(i32) -> i32` | yes      | Somewhere the host may write `len` input bytes  |
-| `tocat_on_bytes`         | `(i32, i32)`   | yes      | A chunk, as a pointer and a length              |
-| `tocat_init`             | `(i32, i32)`   | no       | The entry's `config`, as JSON, once             |
-| `tocat_on_eof`           | `()`           | no       | Upstream is finished. The last chance to emit   |
-| `tocat_on_tick`          | `()`           | no       | The schedule came due                           |
-| `tocat_tick_interval_ns` | `() -> i64`    | no       | Requested tick period, 0 for none. Read once    |
-| `tocat_datagram_safe`    | `() -> i32`    | no       | Non-zero if boundaries are preserved. Read once |
+| Export                   | Signature      | Required | Meaning                                        |
+| ------------------------ | -------------- | -------- | ---------------------------------------------- |
+| `memory`                 | memory         | yes      | The guest's linear memory                      |
+| `tocat_abi_version`      | `() -> i32`    | yes      | Must be 2                                      |
+| `tocat_outbox`           | `() -> i32`    | yes      | Pointer to the outbox                          |
+| `tocat_alloc`            | `(i32) -> i32` | yes      | Somewhere the host may write `len` input bytes |
+| `tocat_on_bytes`         | `(i32, i32)`   | yes      | A chunk, as a pointer and a length             |
+| `tocat_init`             | `(i32, i32)`   | no       | The entry's `config`, as JSON, once            |
+| `tocat_on_eof`           | `()`           | no       | Upstream is finished. The last chance to emit  |
+| `tocat_on_tick`          | `()`           | no       | The schedule came due                          |
+| `tocat_tick_interval_ns` | `() -> i64`    | no       | Requested tick period, 0 for none. Read once   |
+| `tocat_boundaries`       | `() -> i32`    | no       | Boundary effect and requirement. Read once     |
 
 `tocat_alloc` is an arena rather than a heap: the host never frees, writes
 exactly `len` bytes, and calls it again on the next chunk. One static buffer,
 grown when a chunk does not fit, is a complete implementation. Returning 0
 refuses the chunk, and the host fails that direction saying so.
 
-Both `tocat_tick_interval_ns` and `tocat_datagram_safe` are read once, after
+Both `tocat_tick_interval_ns` and `tocat_boundaries` are read once, after
 `tocat_init`, because that is when the guest knows its options and because the
 host reads them once too. A guest that asks for a tick without exporting
 `tocat_on_tick` gets no timer.
+
+## Declaring boundaries
+
+`tocat_boundaries` packs two answers into one word. Bits 0 and 1 say what the
+stage does to the message boundaries passing through it, and bits 2 and 3 say
+what it needs of the path it was placed on.
+
+| Constant                    | Bits | Means                                                           |
+| --------------------------- | ---- | --------------------------------------------------------------- |
+| `TOCAT_BOUNDARIES_FUSE`     | 0    | The units above do not reach the stage below. The default       |
+| `TOCAT_BOUNDARIES_PRESERVE` | 0-1  | One unit in, one unit out                                       |
+| `TOCAT_BOUNDARIES_SEAL`     | 0-1  | As preserve, and the boundary is written into the payload too   |
+| `TOCAT_BOUNDARIES_SPLIT`    | 0-1  | The units below are read out of the bytes rather than inherited |
+| `TOCAT_NEEDS_NOTHING`       | 2-3  | Works on any path. The default                                  |
+| `TOCAT_NEEDS_UPSTREAM`      | 2-3  | Every call must carry one whole message                         |
+| `TOCAT_NEEDS_DOWNSTREAM`    | 2-3  | The units emitted must reach the far end intact                 |
+| `TOCAT_NEEDS_BOTH`          | 2-3  | Both of the above                                               |
+
+A guest that does not export the function answers zero, which claims nothing and
+asks for nothing. Any bit outside those two fields is a guest built against a
+later ABI than the host speaks, and the host refuses it at load rather than
+reading it as a claim of nothing.
+
+The effect is a warning and the requirement is an error. The host warns when a
+fusing stage sits on a path whose destination is a datagram endpoint, since the
+operator may know the peer tolerates it; an unmet requirement fails the build,
+since the stage cannot work where it was put whatever the peer tolerates.
 
 ## Pointers are absolute
 
@@ -159,7 +186,7 @@ pub struct Upper {
 
 impl Guest for Upper {
     const INIT: Self = Self { out: [0; CAPACITY] };
-    const DATAGRAM_SAFE: bool = true;
+    const BOUNDARIES: Boundaries = Boundaries::Preserve;
 
     fn on_bytes(&mut self, ctx: &mut Context, input: &[u8]) {
         for (out, byte) in self.out.iter_mut().zip(input) {
@@ -219,7 +246,7 @@ In C++ the exports are generated rather than written:
 
 ```cpp
 struct Upper {
-    static constexpr bool datagram_safe = true;
+    static constexpr uint32_t boundaries = TOCAT_BOUNDARIES_PRESERVE;
 
     void on_bytes(tocat::ctx &c, tocat::bytes input) { ... }
 };
@@ -227,12 +254,13 @@ struct Upper {
 TOCAT_GUEST(Upper, 256 * 1024)
 ```
 
-`init`, `on_eof`, `on_tick` and `tick_interval` are optional and detected. `ctx`
-resets the outbox on construction, so the stale-flag mistake below cannot be
-made, and a halt reason is `consteval` from a string literal, so one that would
-not outlive the call does not compile. The header wraps the C one rather than
-restating it: two headers describing one ABI would drift, and the one that
-drifted would be the one nobody tested.
+`boundaries` and `needs` are optional; a guest declaring neither claims nothing
+and asks for nothing. `init`, `on_eof`, `on_tick` and `tick_interval` are
+optional and detected too. `ctx` resets the outbox on construction, so the
+stale-flag mistake below cannot be made, and a halt reason is `consteval` from a
+string literal, so one that would not outlive the call does not compile. The
+header wraps the C one rather than restating it: two headers describing one ABI
+would drift, and the one that drifted would be the one nobody tested.
 
 Three things differ from the Rust guest above and are worth knowing before
 writing one.

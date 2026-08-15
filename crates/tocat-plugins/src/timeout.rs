@@ -36,7 +36,9 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tocat_api::{BuildCtx, Ctx, Interval, Plugin, PluginError, PluginFactory, Result, Stage};
+use tocat_api::{
+    Boundaries, BuildCtx, Ctx, Interval, Plugin, PluginError, PluginFactory, Result, Stage,
+};
 
 pub const NAME: &str = "timeout";
 
@@ -117,8 +119,8 @@ impl Plugin for Timeout {
     /// Safe on a datagram path: no bytes are held across calls, none are
     /// emitted from a tick, and a message goes out as the message it arrived
     /// as. Halting between datagrams is a short transfer, not a corrupt one.
-    fn datagram_safe(&self) -> bool {
-        true
+    fn boundaries(&self) -> Boundaries {
+        Boundaries::Preserve
     }
 }
 

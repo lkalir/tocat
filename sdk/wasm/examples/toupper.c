@@ -42,9 +42,10 @@ TOCAT_EXPORT(tocat_on_bytes) void tocat_on_bytes(int32_t ptr, int32_t len) {
 
 /*
  * One message in, one message out, and nothing is held across calls, so this
- * is safe on a datagram path and says so. A guest that says nothing is assumed
- * unsafe, which is the right default and the wrong answer here.
+ * preserves boundaries and says so. A guest that says nothing claims nothing,
+ * which is the right default and the wrong answer here. Bits 2 and 3 are left
+ * clear: this stage works on any path.
  */
-TOCAT_EXPORT(tocat_datagram_safe) int32_t tocat_datagram_safe(void) {
-    return 1;
+TOCAT_EXPORT(tocat_boundaries) int32_t tocat_boundaries(void) {
+    return TOCAT_BOUNDARIES_PRESERVE | TOCAT_NEEDS_NOTHING;
 }

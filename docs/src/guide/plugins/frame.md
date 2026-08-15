@@ -49,13 +49,13 @@ Five, in two families. The terminator family scans for a byte string and pays
 for a payload that could contain it. The counted family reads a header and pays
 nothing for the payload at all.
 
-| Mode        | Framing                            | Overhead per message      | Payload                          |
-| ----------- | ---------------------------------- | ------------------------- | -------------------------------- |
-| `delimiter` | a byte string, newline by default  | the delimiter             | must not contain the delimiter   |
-| `cobs`      | zero byte, payload stuffed         | 1 byte + 1 per 254        | any                              |
-| `slip`      | `0xc0`, payload escaped            | 1 byte + 1 per `c0`/`db`  | any                              |
-| `length`    | fixed-width prefix                 | 1, 2, 4 or 8 bytes        | any, up to what the width holds  |
-| `netstring` | `LEN:payload,`                     | 3 bytes or so             | any                              |
+| Mode        | Framing                           | Overhead per message     | Payload                         |
+| ----------- | --------------------------------- | ------------------------ | ------------------------------- |
+| `delimiter` | a byte string, newline by default | the delimiter            | must not contain the delimiter  |
+| `cobs`      | zero byte, payload stuffed        | 1 byte + 1 per 254       | any                             |
+| `slip`      | `0xc0`, payload escaped           | 1 byte + 1 per `c0`/`db` | any                             |
+| `length`    | fixed-width prefix                | 1, 2, 4 or 8 bytes       | any, up to what the width holds |
+| `netstring` | `LEN:payload,`                    | 3 bytes or so            | any                             |
 
 ### `delimiter`
 
@@ -96,8 +96,8 @@ payload.
 A header says how long the message is, so the payload is written and read
 untouched and the overhead does not depend on it. These are also the only modes
 that know how big a message is before reading it, which is what lets
-`max-message` reject an oversized one from its header instead of after
-buffering it.
+`max-message` reject an oversized one from its header instead of after buffering
+it.
 
 `length` writes a fixed-width big-endian prefix, which is what most binary
 protocols on a TCP hop already speak. Set `endian=little` for a peer that got
@@ -113,8 +113,8 @@ spaces, and no leading zero to pad the header out with.
 [netstring]: https://cr.yp.to/proto/netstrings.txt
 
 Neither counted mode can resynchronise. A receiver that joins mid-stream, or a
-sender that gets one length wrong, is lost until the connection is remade,
-where the terminator modes recover at the next terminator.
+sender that gets one length wrong, is lost until the connection is remade, where
+the terminator modes recover at the next terminator.
 
 ## The delimiter has to be absent from the payload
 
@@ -156,6 +156,51 @@ The cap is on one message, not on the stream: a stream of small messages never
 approaches it however long it runs. Framing bytes do not count against it, so a
 message of exactly `max-message` still passes. `max-message=0` removes the cap,
 which is worth doing only for a peer you control.
+
+## What framing survives, and what it does not
+
+Framing puts the boundary into the payload, so it outlives a stage below that
+loses message boundaries: `block`, `compress`, `process`. That is what makes
+
+```
+tocat file:in.bin 'frame,mode=cobs' 'compress' tcp:collector:9000
+```
+
+meaningful where the same two stages without `frame` would leave the far end
+unable to tell one message from the next.
+
+What survives is the *bytes*, though, not the framing as such, and that puts two
+conditions on the stage below.
+
+The first is that the bytes have to come out the other end. A stage that copies
+them (`block`) or transforms them reversibly (`compress`, or a `process` running
+`gzip`) is fine, because the framing bytes are still in there. A stage that
+drops or rewrites them is not: `process` with `argv = ["grep", "ERROR"]` throws
+away whole frames and half of a COBS escape sequence with them, and the far end
+sees a corrupt stream rather than fewer messages. tocat cannot tell the two
+apart, and does not try: what a subprocess does to its stdin is not something
+the relay can inspect.
+
+The second is that the inverse has to run on the far side, above the `unframe`
+rather than below it. The framing bytes are inside the compressed stream, so
+they only reappear once it has been decompressed:
+
+```
+send:    ... -> frame -> compress -> tcp
+receive: tcp -> decompress -> unframe -> ...
+```
+
+Reversing that nesting is also valid and means something else. `compress` above
+`frame` frames whatever chunks the compressor emits rather than the messages it
+was given, and the far end recovers those chunks, not your messages.
+
+Two smaller things about a subprocess in the middle. Pick a binary-safe mode:
+anything that emits arbitrary bytes rules out `delimiter` unless something
+upstream guarantees the payload cannot contain it, which is what `cobs` is for.
+And check the child flushes. libc block-buffers stdout when it is a pipe, so a
+framed message can sit in the child waiting for 4KiB of company that never
+arrives, which on a relay is a stall rather than a slowdown. `stdbuf -o0`, or
+whatever the program's own flag is.
 
 ## The end of the stream
 

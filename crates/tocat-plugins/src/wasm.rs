@@ -28,7 +28,8 @@ use engine::Guest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tocat_api::{
-    BuildCtx, ByteSize, Ctx, Execution, Plugin, PluginError, PluginFactory, Result, Stage,
+    Boundaries, BuildCtx, ByteSize, Ctx, Execution, Needs, Plugin, PluginError, PluginFactory,
+    Result, Stage,
 };
 
 pub const NAME: &str = "wasm";
@@ -78,7 +79,8 @@ pub struct WasmConfig {
 pub struct Wasm {
     guest: Guest,
     tick: Option<Duration>,
-    datagram_safe: bool,
+    boundaries: Boundaries,
+    needs: Needs,
 }
 
 impl std::fmt::Debug for Wasm {
@@ -86,7 +88,8 @@ impl std::fmt::Debug for Wasm {
         f.debug_struct("Wasm")
             .field("guest", &"<guest>")
             .field("tick", &self.tick)
-            .field("datagram_safe", &self.datagram_safe)
+            .field("boundaries", &self.boundaries)
+            .field("needs", &self.needs)
             .finish()
     }
 }
@@ -100,8 +103,12 @@ impl Plugin for Wasm {
         self.tick
     }
 
-    fn datagram_safe(&self) -> bool {
-        self.datagram_safe
+    fn boundaries(&self) -> Boundaries {
+        self.boundaries
+    }
+
+    fn needs(&self) -> Needs {
+        self.needs
     }
 
     fn on_bytes(&mut self, ctx: &mut Ctx<'_>, input: &[u8]) -> Result<()> {
@@ -235,7 +242,8 @@ impl PluginFactory for WasmFactory {
 
         Ok(Stage::filter(Wasm {
             tick: guest.tick_interval(),
-            datagram_safe: guest.datagram_safe(),
+            boundaries: guest.boundaries(),
+            needs: guest.needs(),
             guest,
         }))
     }
@@ -255,7 +263,7 @@ mod tests {
         (module
           (memory (export "memory") 1)
           (data (i32.const 0) "\01\00\00\00")
-          (func (export "tocat_abi_version") (result i32) (i32.const 1))
+          (func (export "tocat_abi_version") (result i32) (i32.const 2))
           (func (export "tocat_outbox") (result i32) (i32.const 0))
           (func (export "tocat_alloc") (param i32) (result i32) (i32.const 64))
           (func (export "tocat_on_bytes") (param i32 i32)))
@@ -270,7 +278,7 @@ mod tests {
           (data (i32.const 0) "\02\00\00\00\80\00\00\00\06\00\00\00\78\00\00\00\01\00\00\00")
           (data (i32.const 120) "\03\00\00\00")
           (data (i32.const 128) "abcdef")
-          (func (export "tocat_abi_version") (result i32) (i32.const 1))
+          (func (export "tocat_abi_version") (result i32) (i32.const 2))
           (func (export "tocat_outbox") (result i32) (i32.const 0))
           (func (export "tocat_alloc") (param i32) (result i32) (i32.const 256))
           (func (export "tocat_on_bytes") (param i32 i32)))
@@ -281,7 +289,7 @@ mod tests {
     const SPINS: &str = r#"
         (module
           (memory (export "memory") 1)
-          (func (export "tocat_abi_version") (result i32) (i32.const 1))
+          (func (export "tocat_abi_version") (result i32) (i32.const 2))
           (func (export "tocat_outbox") (result i32) (i32.const 0))
           (func (export "tocat_alloc") (param i32) (result i32) (i32.const 64))
           (func (export "tocat_on_bytes") (param i32 i32)
@@ -294,7 +302,7 @@ mod tests {
           (import "wasi_snapshot_preview1" "fd_write"
             (func $fd_write (param i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (func (export "tocat_abi_version") (result i32) (i32.const 1))
+          (func (export "tocat_abi_version") (result i32) (i32.const 2))
           (func (export "tocat_outbox") (result i32) (i32.const 0))
           (func (export "tocat_alloc") (param i32) (result i32) (i32.const 64))
           (func (export "tocat_on_bytes") (param i32 i32)))
@@ -305,7 +313,7 @@ mod tests {
     const REFUSES: &str = r#"
         (module
           (memory (export "memory") 1)
-          (func (export "tocat_abi_version") (result i32) (i32.const 1))
+          (func (export "tocat_abi_version") (result i32) (i32.const 2))
           (func (export "tocat_outbox") (result i32) (i32.const 0))
           (func (export "tocat_alloc") (param i32) (result i32) (i32.const 0))
           (func (export "tocat_on_bytes") (param i32 i32)))
@@ -340,7 +348,8 @@ mod tests {
 
         Ok(Wasm {
             tick: guest.tick_interval(),
-            datagram_safe: guest.datagram_safe(),
+            boundaries: guest.boundaries(),
+            needs: guest.needs(),
             guest,
         })
     }

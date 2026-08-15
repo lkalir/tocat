@@ -47,6 +47,11 @@ checks when the destination on that path is a datagram endpoint. The default for
 a stage that says nothing, including any plugin from outside the binary, is that
 it is not safe.
 
+A few stages go further and *need* message boundaries rather than merely
+preserving them. Those are checked too, and an unmet requirement is an error
+rather than a warning: see
+[When a stage needs boundaries](#when-a-stage-needs-boundaries) below.
+
 ## Writing an entry
 
 On the command line an entry is comma-separated, as an endpoint is. A bare key
@@ -146,7 +151,7 @@ on a path whose *destination* is a datagram endpoint, tocat names it, warns, and
 relays anyway:
 
 ```
-stage may not preserve message boundaries; datagrams send to this endpoint may be split, merged, or malformed
+stage may not preserve message boundaries; datagrams sent to this endpoint may be split, merged, or malformed
 ```
 
 That is a warning rather than a refusal because rewriting the message stream is
@@ -160,6 +165,37 @@ stream sink is unremarkable and draws no warning. So
 `udp-listen:9000 compress udp:peer:9000` will warn. A `process` stage always
 warns: its stdin and stdout are byte streams, so boundaries are gone the moment
 bytes cross the pipe.
+
+### When a stage needs boundaries
+
+None of the stages above do, but a plugin from outside the binary can say that
+it does, and a [WebAssembly guest](plugins/wasm.md) declares it through
+`TOCAT_NEEDS_UPSTREAM` and `TOCAT_NEEDS_DOWNSTREAM`. A stage that reads whole
+messages needs one message per call; a stage that writes whole messages needs
+the ones it emits to arrive intact. Neither is a matter of taste, so an unmet
+requirement stops the relay before it starts rather than warning, and names both
+the stage and what took the boundaries away:
+
+```
+wasm on source-to-sink needs message boundaries arriving, and the source tcp://host:9000 is a byte
+stream: put an unframe above it, or use a stage that does not need them
+```
+
+There are two ways to satisfy one. A datagram endpoint on the relevant side
+supplies boundaries by itself, so nothing more is needed on a UDP path. On a
+byte stream, [`frame` and `unframe`](plugins/frame.md) are what put them there:
+`unframe` above a stage that reads messages, `frame` below one that writes them.
+
+The scan stops at the first stage that settles the question, so a `frame`
+anywhere below covers everything under it: once the boundary is in the payload
+no later stage can lose it. A stage needing its units delivered is therefore
+happy with `frame,mode=length` below it even when a `compress` sits below that,
+and unhappy with the same two the other way round, since the units are gone by
+the time the framer sees them.
+
+The check goes as far as confirming something downstream can put the boundaries
+on the wire. It cannot confirm the bytes reach the peer intact, or that the peer
+unframes them: see [What framing survives](plugins/frame.md#what-framing-survives-and-what-it-does-not).
 
 One more thing a datagram sink does silently: an empty emission is not sent. At
 end of stream a pipeline is drained once more, and on a datagram sink that would

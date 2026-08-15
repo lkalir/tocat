@@ -54,10 +54,10 @@ pub use crate::{
     forgiving::Forgiving,
     interval::{Interval, ParseIntervalError},
     normalize::{canonical, normalize},
-    pipeline::{Chain, Emitted, Pipeline, Registry, Segment},
+    pipeline::{BoundaryFault, Chain, Emitted, Pipeline, Registry, Segment, Side},
     plugin::{
-        BuildCtx, Ctx, EffectSink, Emission, Emit, Execution, ExternalStage, LogLevel,
-        PipelineMeta, Plugin, PluginFactory, Stage, StageInfo, StderrMode,
+        Boundaries, BuildCtx, Ctx, EffectSink, Emission, Emit, Execution, ExternalStage, LogLevel,
+        Needs, PipelineMeta, Plugin, PluginFactory, Stage, StageInfo, StderrMode,
     },
     size::{ByteSize, ParseSizeError},
 };

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 use clap::Parser;
 use rustyline::DefaultEditor;
+use tocat_wasm_abi::{TOCAT_ABI_VERSION, unpack_boundaries};
 use wasmtime::{error::Context, *};
 
 #[derive(Parser, Debug)]
@@ -145,17 +146,22 @@ fn main() -> Result<()> {
     let linker = Linker::new(&engine);
     let instance = linker.instantiate(&mut store, &module)?;
 
-    // Validate ABI version
-    if let Ok(abi_fn) = instance.get_typed_func::<(), i32>(&mut store, "tocat_abi_version") {
-        let ver = abi_fn.call(&mut store, ())?;
-        if ver != 1 {
-            bail!("Incompatible guest ABI version: expected 1, got {ver}");
-        }
-    } else {
+    // Validate ABI version against the constant rather than a literal, so the
+    // shell cannot drift from the host it exists to imitate.
+    let Ok(abi_fn) = instance.get_typed_func::<(), i32>(&mut store, "tocat_abi_version") else {
         bail!("Module missing required 'tocat_abi_version' export");
+    };
+
+    let version = abi_fn.call(&mut store, ())?;
+
+    if version != TOCAT_ABI_VERSION as i32 {
+        bail!("Incompatible guest ABI version: expected {TOCAT_ABI_VERSION}, got {version}");
     }
 
-    println!("Loaded WASM plugin (ABI v1): {}", args.path.display());
+    println!(
+        "Loaded WASM plugin (ABI v{version}): {}",
+        args.path.display()
+    );
     println!("\nExported Functions:");
     for export in module.exports() {
         if let Some(FuncType { .. }) = export.ty().func() {
@@ -164,8 +170,18 @@ fn main() -> Result<()> {
     }
 
     // Read optional configurations once
-    if let Ok(f) = instance.get_typed_func::<(), i32>(&mut store, "tocat_datagram_safe") {
-        println!("  • Datagram Safe : {}", f.call(&mut store, ())? != 0);
+    if let Ok(f) = instance.get_typed_func::<(), i32>(&mut store, "tocat_boundaries") {
+        let raw = f.call(&mut store, ())?;
+
+        match u32::try_from(raw).ok().and_then(unpack_boundaries) {
+            Some((boundaries, needs)) => {
+                println!("  • Boundaries    : {boundaries:?}");
+                println!("  • Needs         : {needs:?}");
+            }
+            // Poking at a guest is exactly when this happens, so say what came
+            // back rather than refusing to print anything.
+            None => println!("  • Boundaries    : {raw} (not a value this build understands)"),
+        }
     }
     if let Ok(f) = instance.get_typed_func::<(), i64>(&mut store, "tocat_tick_interval_ns") {
         println!("  • Tick Interval : {} ns", f.call(&mut store, ())?);
