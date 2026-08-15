@@ -128,9 +128,11 @@ pub enum EndpointSpec {
     #[serde(
         alias = "TCP",
         alias = "tcp-connect",
-        alias = "connect",
         alias = "TCP-CONNECT",
-        alias = "CONNECT"
+        alias = "connect",
+        alias = "CONNECT",
+        alias = "tcpconnect",
+        alias = "TCPCONNECT",
     )]
     Tcp(Tcp),
     #[serde(
@@ -142,9 +144,27 @@ pub enum EndpointSpec {
     )]
     TcpListen(TcpListen),
     Stdio(Stdio),
-    #[serde(alias = "UNIX", alias = "unix-connect", alias = "UNIX-CONNECT")]
+    #[serde(
+        alias = "UNIX",
+        alias = "unix-connect",
+        alias = "UNIX-CONNECT",
+        alias = "uds",
+        alias = "UDS",
+        alias = "uds-connect",
+        alias = "UDS-CONNECT",
+        alias = "udsconnect",
+        alias = "UDSCONNECT"
+    )]
     Unix(Unix),
-    #[serde(alias = "UNIX-LISTEN", alias = "unixlisten", alias = "UNIXLISTEN")]
+    #[serde(
+        alias = "UNIX-LISTEN",
+        alias = "unixlisten",
+        alias = "UNIXLISTEN",
+        alias = "uds-listen",
+        alias = "UDS-LISTEN",
+        alias = "udslisten",
+        alias = "UDSLISTEN"
+    )]
     UnixListen(UnixListen),
     #[serde(alias = "fifo", alias = "FIFO", alias = "PIPE")]
     Pipe(Pipe),
@@ -158,7 +178,13 @@ pub enum EndpointSpec {
     PtyExec(PtyExec),
     #[serde(alias = "TTY", alias = "serial", alias = "SERIAL")]
     Tty(Tty),
-    #[serde(alias = "UDP", alias = "udp-connect", alias = "UDP-CONNECT")]
+    #[serde(
+        alias = "UDP",
+        alias = "udp-connect",
+        alias = "UDP-CONNECT",
+        alias = "udpconnect",
+        alias = "UDPCONNECT"
+    )]
     Udp(Udp),
     #[serde(alias = "UDP-LISTEN", alias = "udplisten", alias = "UDPLISTEN")]
     UdpListen(UdpListen),

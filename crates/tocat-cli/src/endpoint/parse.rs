@@ -194,8 +194,10 @@ impl std::str::FromStr for EndpointSpec {
             "tty" | "serial" => Tty::parse(body, opts).map(Self::Tty),
             "udp" | "udpconnect" => Udp::parse(body, opts).map(Self::Udp),
             "udplisten" => UdpListen::parse(body, opts).map(Self::UdpListen),
-            "unix" | "unix-connect" => Unix::parse(body, opts).map(Self::Unix),
-            "unixlisten" => UnixListen::parse(body, opts).map(Self::UnixListen),
+            "unix" | "unixconnect" | "uds" | "udsconnect" => {
+                Unix::parse(body, opts).map(Self::Unix)
+            }
+            "unixlisten" | "udslisten" => UnixListen::parse(body, opts).map(Self::UnixListen),
             other => Err(Self::Err::UnknownScheme(other.to_owned())),
         }
     }
