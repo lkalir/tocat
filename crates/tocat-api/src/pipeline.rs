@@ -208,6 +208,42 @@ struct Schedule {
     next: Instant,
 }
 
+/// What arrives at one stage: the bytes above it, how they are framed, and
+/// whether the stream has ended.
+///
+/// The first two are what [`Emitted`] carries, because on every stage but the
+/// first they *are* what the stage above emitted. `bounds` frames `bytes` the
+/// same way: empty is one unit, which is the shape of every chunk off the wire
+/// and of everything a stage that never calls [`Ctx::boundary`] produces.
+struct Input<'a> {
+    pub bytes: &'a [u8],
+    pub bounds: &'a [usize],
+    pub eof: bool,
+}
+
+/// Where one stage's output goes, and who it belongs to.
+///
+/// Everything [`Ctx::new`] needs except the payload, which is why it is built
+/// once per stage and turned into a [`Ctx`] once per unit. Host-side only: a
+/// plugin never sees this, and it is not one of the `*Ctx` types handed to
+/// one.
+struct Wiring<'a> {
+    meta: &'a PipelineMeta,
+    stage: &'a str,
+    dst: &'a mut Emission,
+    sink: &'a mut dyn EffectSink,
+}
+
+impl Wiring<'_> {
+    /// The context for one call, over these outputs and those bytes.
+    ///
+    /// Borrows rather than consumes, so the caller still has an emission to
+    /// inspect once the stage has returned.
+    fn ctx<'b>(&'b mut self, bytes: &'b [u8]) -> Ctx<'b> {
+        Ctx::new(self.meta, self.stage, bytes, self.dst, self.sink)
+    }
+}
+
 impl Pipeline {
     #[must_use]
     pub fn new(meta: PipelineMeta, stages: Vec<Box<dyn Plugin>>) -> Self {
@@ -422,16 +458,20 @@ impl Pipeline {
         for index in from..self.stages.len() {
             let (slot, src, src_bounds, dst) = self.bufs.borrow(live, input);
 
-            run(
-                &mut self.stages[index],
-                &self.meta,
-                &self.names[index],
-                src,
-                src_bounds,
+            let mut wiring = Wiring {
+                meta: &self.meta,
+                stage: &self.names[index],
                 dst,
                 sink,
+            };
+
+            let chunk = Input {
+                bytes: src,
+                bounds: src_bounds,
                 eof,
-            )?;
+            };
+
+            run(&mut *self.stages[index], &mut wiring, chunk)?;
 
             let emitted = dst.emit();
             let rearm = dst.rearm_requested();
@@ -458,49 +498,35 @@ impl Pipeline {
     }
 }
 
-/// Give one stage the bytes above it, and collect what it emitted into `dst`.
+/// Leaves [`Emit::Passthrough`] on the emission only when nothing was copied,
+/// so the caller can go on handing the source buffer down the chain.
 ///
-/// `in_bounds` frames `input` the way [`Emitted`] describes: empty is one
-/// unit, which is the shape of every chunk off the wire and of everything a
-/// stage that never calls [`Ctx::boundary`] produces. When it is not empty the
-/// stage is called once per unit, because a stage handed framed bytes must not
-/// see two units fused into one call.
-///
-/// Leaves [`Emit::Passthrough`] on `dst` only when nothing was copied, so the
-/// caller can go on handing the source buffer down the chain.
-fn run(
-    plugin: &mut Box<dyn Plugin>,
-    meta: &PipelineMeta,
-    stage: &str,
-    input: &[u8],
-    in_bounds: &[usize],
-    dst: &mut Emission,
-    sink: &mut dyn EffectSink,
-    eof: bool,
-) -> Result<()> {
-    dst.reset();
+/// Takes `&mut dyn Plugin` rather than the `Box` it lives in: the box is the
+/// caller's storage and says nothing here.
+fn run(plugin: &mut dyn Plugin, wiring: &mut Wiring, input: Input) -> Result<()> {
+    wiring.dst.reset();
 
-    if in_bounds.is_empty() {
+    if input.bounds.is_empty() {
         {
-            let mut ctx = Ctx::new(meta, stage, input, dst, sink);
+            let mut ctx = wiring.ctx(input.bytes);
 
-            if eof {
+            if input.eof {
                 // Every stage but the first is handed whatever the one above
                 // it produced on its way out.
-                if !input.is_empty() {
-                    plugin.on_bytes(&mut ctx, input)?;
+                if !input.bytes.is_empty() {
+                    plugin.on_bytes(&mut ctx, input.bytes)?;
                 }
 
                 plugin.on_eof(&mut ctx)?;
             } else {
-                plugin.on_bytes(&mut ctx, input)?;
+                plugin.on_bytes(&mut ctx, input.bytes)?;
             }
         }
 
         // Only when the stage declared framing of its own. Closing an unframed
         // emission would allocate on the hot path to say what empty says.
-        if !dst.bounds().is_empty() {
-            dst.close();
+        if !wiring.dst.bounds().is_empty() {
+            wiring.dst.close();
         }
 
         return Ok(());
@@ -508,16 +534,16 @@ fn run(
 
     let mut copied = false;
 
-    for (index, unit) in units(input, in_bounds).enumerate() {
-        dst.next_unit();
+    for (index, unit) in units(input.bytes, input.bounds).enumerate() {
+        wiring.dst.next_unit();
 
         {
-            let mut ctx = Ctx::new(meta, stage, unit, dst, sink);
+            let mut ctx = wiring.ctx(unit);
             plugin.on_bytes(&mut ctx, unit)?;
         }
 
         if !copied {
-            if dst.emit() == Emit::Passthrough {
+            if wiring.dst.emit() == Emit::Passthrough {
                 // Nothing but the source buffer's own bytes so far, so there
                 // is still nothing to copy.
                 continue;
@@ -525,38 +551,38 @@ fn run(
 
             // The first unit this stage did not hand back verbatim, so the
             // ones before it have to become real bytes now.
-            materialise(input, in_bounds, index, dst);
+            materialise(input.bytes, input.bounds, index, wiring.dst);
             copied = true;
         }
 
-        if dst.emit() == Emit::Passthrough {
-            dst.out.extend_from_slice(unit);
+        if wiring.dst.emit() == Emit::Passthrough {
+            wiring.dst.out.extend_from_slice(unit);
         }
 
-        dst.close();
+        wiring.dst.close();
     }
 
-    if eof {
-        dst.next_unit();
+    if input.eof {
+        wiring.dst.next_unit();
 
         {
-            let mut ctx = Ctx::new(meta, stage, EMPTY, dst, sink);
+            let mut ctx = wiring.ctx(EMPTY);
             plugin.on_eof(&mut ctx)?;
         }
 
         // An epilogue is bytes of its own, so it forces the copy that the
         // units before it avoided.
-        if !copied && !dst.bytes().is_empty() {
-            materialise(input, in_bounds, in_bounds.len(), dst);
+        if !copied && !wiring.dst.bytes().is_empty() {
+            materialise(input.bytes, input.bounds, input.bounds.len(), wiring.dst);
             copied = true;
         }
 
         if copied {
-            dst.close();
+            wiring.dst.close();
         }
     }
 
-    dst.emit = if copied {
+    wiring.dst.emit = if copied {
         Emit::Buffered
     } else {
         Emit::Passthrough
@@ -633,14 +659,12 @@ impl fmt::Debug for Pipeline {
     }
 }
 
-/// Everything that runs on one direction, split into segments.
-///
-/// One segment is the common case and runs entirely on the reading task. A
-/// stage declared `Detached` starts a new segment, which the host runs on its
-/// own task behind a bounded channel; subsequent inline stages join that
-/// segment rather than spawning more.
 /// One link in a chain: either stages the host calls inline, or a subprocess
 /// it feeds and drains.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "destructured once per segment per connection"
+)]
 #[derive(Debug)]
 pub enum Segment {
     Inline(Pipeline),
@@ -686,7 +710,12 @@ pub struct BoundaryFault<'a> {
     pub cause: Option<&'a str>,
 }
 
-/// Data processing chain.
+/// Everything that runs on one direction, split into segments.
+///
+/// One segment is the common common case and runs entirely on the reading task.
+/// A stage declared `Detached` starts a new segment, which the host runs on its
+/// own task behind a bounded channel; subsequent inline stages join that
+/// segment rather than spawning more.
 #[derive(Debug)]
 pub struct Chain {
     meta: PipelineMeta,
