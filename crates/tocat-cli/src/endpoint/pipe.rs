@@ -188,10 +188,7 @@ impl Pipe {
             Direction::Sink => EndpointStream::write_only(file),
         };
 
-        Ok(match self.guard() {
-            Some(guard) => stream.into_connection_with_guard(guard),
-            None => stream.into_connection(),
-        })
+        Ok(stream.into_connection_with_guard(self.guard()))
     }
 
     pub(super) fn connect_sync(&self, dir: Direction) -> anyhow::Result<SyncHalves> {

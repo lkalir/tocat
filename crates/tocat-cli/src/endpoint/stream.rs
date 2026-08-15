@@ -15,12 +15,18 @@
 //! boundary. Everything downstream of an endpoint therefore has to handle both
 //! shapes, which is what [`ReadHalf`] and [`WriteHalf`] make explicit.
 
+use std::sync::Arc;
+
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpStream, UnixStream},
 };
 
-use crate::endpoint::{sys::PathGuard, udp::UdpSession};
+use crate::endpoint::{
+    datagram::Session,
+    sys::PathGuard,
+    unix::{dgram::UnixDgramSocket, seqpacket::SeqpacketConn},
+};
 
 /// A synchronous endpoint half. See [`EndpointSpec::connect_sync`].
 ///
@@ -83,24 +89,33 @@ pub enum EndpointStream {
     Datagram(DatagramSocket),
 }
 
-/// A datagram endpoint, either a socket of its own or one peer's share of a
+/// A message endpoint, either a socket of its own or one peer's share of a
 /// shared one.
 #[derive(Clone)]
 pub enum DatagramSocket {
-    Udp(std::sync::Arc<tokio::net::UdpSocket>),
-    /// One sender's session on a forked `udp-listen:`. See [`UdpSession`].
-    Session(std::sync::Arc<UdpSession>),
+    Udp(Arc<tokio::net::UdpSocket>),
+    /// A `unix-dgram:` or an unforked `unix-dgram-listen:`. See
+    /// [`UnixDgramSocket`].
+    UnixDgram(Arc<UnixDgramSocket>),
+    /// A connected `SOCK_SEQPACKET` socket: the one variant with an end of
+    /// stream and a shutdown to send. See [`SeqpacketConn`].
+    Seqpacket(Arc<SeqpacketConn>),
+    /// One sender's session on a forked datagram listener. See [`Session`].
+    Session(Arc<Session>),
 }
 
 impl DatagramSocket {
-    /// One datagram, or `None` once the source has ended.
+    /// One message, or `None` once the source has ended.
     ///
-    /// A message longer than `buf` is **truncated**. A socket of our own never
-    /// ends, which is why the plain variant is always `Some`: only a session
-    /// can be closed, by its peer falling silent for longer than `idle`.
+    /// A message longer than `buf` is **truncated**. Only two variants can
+    /// end: a seqpacket socket, whose peer can shut down, and a session, whose
+    /// receive loop can stop or whose path a stage can halt. A connectionless
+    /// socket of our own has no close to observe and is always `Some`.
     pub async fn recv(&self, buf: &mut [u8]) -> std::io::Result<Option<usize>> {
         match self {
             DatagramSocket::Udp(socket) => socket.recv(buf).await.map(Some),
+            DatagramSocket::UnixDgram(socket) => socket.recv(buf).await.map(Some),
+            DatagramSocket::Seqpacket(socket) => socket.recv(buf).await,
             DatagramSocket::Session(session) => session.recv(buf).await,
         }
     }
@@ -108,7 +123,22 @@ impl DatagramSocket {
     pub async fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             DatagramSocket::Udp(socket) => socket.send(buf).await,
+            DatagramSocket::UnixDgram(socket) => socket.send(buf).await,
+            DatagramSocket::Seqpacket(socket) => socket.send(buf).await,
             DatagramSocket::Session(session) => session.send(buf).await,
+        }
+    }
+
+    /// End of stream on the writing side.
+    ///
+    /// Only a connected message socket has one to send: `SHUT_WR` is how
+    /// seqpacket says nothing further is coming, and without it a peer that
+    /// waits for our end of stream never hears one. The connectionless forms
+    /// have nothing to close, which is the same reason they never see an end
+    /// of stream either.
+    pub fn finish(&self) {
+        if let DatagramSocket::Seqpacket(socket) = self {
+            socket.finish();
         }
     }
 }
@@ -134,10 +164,16 @@ impl EndpointStream {
         }
     }
 
-    pub fn into_connection_with_guard(self, guard: PathGuard) -> Connection {
+    /// As [`into_connection`](Self::into_connection), for an endpoint that may
+    /// have created a path.
+    ///
+    /// The guard is optional because whether there is one is a property of the
+    /// address rather than of the scheme: a `pipe:` without `unlink` and a unix
+    /// socket in the abstract namespace both created nothing to remove.
+    pub fn into_connection_with_guard(self, guard: Option<PathGuard>) -> Connection {
         Connection {
             stream: self,
-            guard: Some(guard),
+            guard,
             keepalive: None,
         }
     }
@@ -163,11 +199,24 @@ impl EndpointStream {
     }
 
     pub fn datagram(socket: tokio::net::UdpSocket) -> Self {
-        Self::Datagram(DatagramSocket::Udp(std::sync::Arc::new(socket)))
+        Self::Datagram(DatagramSocket::Udp(Arc::new(socket)))
     }
 
-    pub fn datagram_session(session: UdpSession) -> Self {
-        Self::Datagram(DatagramSocket::Session(std::sync::Arc::new(session)))
+    /// A `SOCK_SEQPACKET` socket, which is a message endpoint rather than a
+    /// byte stream: boundaries are the reason to have chosen it, and
+    /// `AsyncRead`/`AsyncWrite` have nowhere to keep one.
+    pub fn seqpacket(socket: tokio_seqpacket::UnixSeqpacket) -> Self {
+        Self::Datagram(DatagramSocket::Seqpacket(Arc::new(SeqpacketConn::new(
+            socket,
+        ))))
+    }
+
+    pub fn unix_dgram(socket: UnixDgramSocket) -> Self {
+        Self::Datagram(DatagramSocket::UnixDgram(Arc::new(socket)))
+    }
+
+    pub fn datagram_session(session: Session) -> Self {
+        Self::Datagram(DatagramSocket::Session(Arc::new(session)))
     }
 
     /// The two halves, either of which may be absent.

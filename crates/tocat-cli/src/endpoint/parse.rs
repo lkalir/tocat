@@ -29,7 +29,11 @@ use crate::{
         tcp::{Tcp, TcpListen},
         tty::Tty,
         udp::{Udp, UdpListen},
-        unix::{Unix, UnixListen},
+        unix::{
+            Unix, UnixListen,
+            dgram::{UnixDgram, UnixDgramListen},
+            seqpacket::{UnixSeqpacket, UnixSeqpacketListen},
+        },
     },
 };
 
@@ -205,7 +209,23 @@ impl std::str::FromStr for EndpointSpec {
             "unix" | "unixconnect" | "uds" | "udsconnect" => {
                 Unix::parse(body, opts).map(Self::Unix)
             }
+            "unixdgram" | "unixdatagram" | "udsdgram" | "udsdatagram" => {
+                UnixDgram::parse(body, opts).map(Self::UnixDgram)
+            }
+            "unixdgramlisten" | "unixdatagramlisten" | "udsdgramlisten" | "udsdatagramlisten" => {
+                UnixDgramListen::parse(body, opts).map(Self::UnixDgramListen)
+            }
             "unixlisten" | "udslisten" => UnixListen::parse(body, opts).map(Self::UnixListen),
+            "unixseqpacket" | "unixseqpkt" | "udsseqpacket" | "udsseqpkt" | "seqpacket"
+            | "seqpkt" => UnixSeqpacket::parse(body, opts).map(Self::UnixSeqpacket),
+            "unixseqpacketlisten"
+            | "unixseqpktlisten"
+            | "udsseqpacketlisten"
+            | "udsseqpktlisten"
+            | "seqpacketlisten"
+            | "seqpktlisten" => {
+                UnixSeqpacketListen::parse(body, opts).map(Self::UnixSeqpacketListen)
+            }
             other => Err(Self::Err::UnknownScheme(other.to_owned())),
         }
     }

@@ -12,6 +12,13 @@ nowhere to put a boundary. Everything downstream of an endpoint therefore has to
 handle both shapes explicitly, which is what stops a datagram path quietly
 acquiring stream semantics in a refactor.
 
+What sorts an endpoint into one or the other is what it carries, not how it
+connects. `unix-seqpacket` accepts connections, has an end of stream and is a
+datagram endpoint, because a message it delivers is one the peer sent whole.
+Putting it on the stream side would have been the easy choice, since the socket
+would satisfy those traits, and it would have thrown away the only property that
+distinguishes it from `unix`.
+
 ## The rule
 
 On a byte stream a chunk is an arbitrary slice, and both the host and a stage
@@ -52,18 +59,25 @@ boundaries are gone the moment bytes cross the pipe, whatever the child does.
 Four properties of datagram paths ripple through the rest of the system, and are
 worth remembering when adding a feature.
 
-**There is no end of stream, unless a stage makes one.** A datagram source runs
-until interrupted, so anything that only happens at end of stream never happens:
-a `rate` summary, a `compress` epilogue and ratio report, the final short
-`block`. A feature that reports only at the end is a feature that does not exist
-on such a path, which is why `rate` also reports on a cadence. Held FIFOs share
-this property, so both cases need checking anywhere the code assumes end of
-stream will arrive.
+**There is no end of stream, unless a stage makes one**, on the connectionless
+forms. A datagram source runs until interrupted, so anything that only happens
+at end of stream never happens: a `rate` summary, a `compress` epilogue and
+ratio report, the final short `block`. A feature that reports only at the end is
+a feature that does not exist on such a path, which is why `rate` also reports
+on a cadence. Held FIFOs share this property, so both cases need checking
+anywhere the code assumes end of stream will arrive.
 
 A `timeout` stage halting the path is the one thing that produces one, and its
 halt is a real end of stream: `on_eof` runs and those reports do arrive. That
 also makes it the only way a forked session can end, which is why the endpoint
 grew no timer of its own.
+
+`unix-seqpacket` is the exception on both counts, and the one datagram endpoint
+where the end of stream is the peer's. A zero-length receive is its shutdown, so
+its `recv` can report the end without a stage halting the path, and it is the
+only one with a shutdown to send: the writing half half-closes at end of stream
+so a peer waiting for it hears one. Anything here that assumes a datagram
+endpoint runs forever has to check that variant.
 
 **Splitting is the unsafe operation, not truncating.** This is why `limit` has
 three behaviours for the crossing chunk: `drop` and `overshoot` preserve the
@@ -82,12 +96,18 @@ and the lesser harm.
 
 ## Demultiplexing by sender
 
-Without `fork`, `udp-listen` peers with the first sender and ignores everyone
-else. With `fork` it keeps the socket unconnected and routes by source address:
-one receive loop owns the socket, a map takes each datagram to that sender's
-session, and a sender not in the map becomes a new session with its own dialled
-peer and its own chain instances. Two senders are two connections, because stage
-state is per path and per connection.
+Without `fork`, a connectionless listener peers with the first sender and
+ignores everyone else. With `fork` it keeps the socket unconnected and routes by
+source address: one receive loop owns the socket, a map takes each datagram to
+that sender's session, and a sender not in the map becomes a new session with
+its own dialled peer and its own chain instances. Two senders are two
+connections, because stage state is per path and per connection.
+
+The loop is shared by `udp-listen` and `unix-dgram-listen`, over an enum of the
+two socket types and an enum of the two address types rather than a trait with
+generic sessions: two implementations do not earn a type parameter that every
+type around them would then have to carry, and a match against a syscall costs
+nothing.
 
 The alternative, and what socat does, is a fresh `SO_REUSEADDR` socket per peer
 connected to that address, leaving the kernel to route by most specific match.
@@ -97,6 +117,16 @@ specialising, and datagrams arriving between the receive and the connect land on
 the wrong socket anyway. One socket and a map has none of those problems and
 costs a task hop and a copy per datagram, which a pipeline was going to pay at
 its first detached boundary regardless.
+
+**A session needs a sender with an address.** The map is keyed by the sender's
+address and replies go back to it, so a sender with none can neither be told
+apart from another nor answered. UDP always satisfies this, because a socket
+that never bound is given an ephemeral port on its first send. `AF_UNIX` has no
+autobind, so an unbound sender arrives anonymous and its messages are dropped
+with the same accounting as any other drop. This is why `unix-dgram` binds a
+local address by default rather than leaving its own socket anonymous, and why
+`unix-seqpacket-listen` is the answer for peers that cannot bind: an accept
+gives an identity where an address does not.
 
 **Nothing ends a session but a stage.** UDP has no close, so a session lasts as
 long as its task, and the task lasts until both directions finish. The endpoint

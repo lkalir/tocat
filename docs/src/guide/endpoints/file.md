@@ -54,10 +54,10 @@ suffixes, so `seek=1MiB` is a mebibyte in.
 $ tocat file:/dev/sda,device,seek=1MiB file:partition.img,truncate
 ```
 
-An offset into a block device that is not a multiple of its block size is
-warned about rather than refused, since the kernel will not complain and the
-symptom is a shifted image rather than an error. `seek` contradicts `append`,
-where every write goes to the end whatever the offset says.
+An offset into a block device that is not a multiple of its block size is warned
+about rather than refused, since the kernel will not complain and the symptom is
+a shifted image rather than an error. `seek` contradicts `append`, where every
+write goes to the end whatever the offset says.
 
 A terminal is the exception to all of this. It is duplex on one descriptor,
 which this scheme cannot produce, and its settings have to be restored

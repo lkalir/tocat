@@ -444,6 +444,11 @@ async fn run_process(
                     }
                     socket.send(&buf[..n]).await?;
                 }
+
+                // The child's stdout closing is this path's end of stream, and
+                // a connected message sink has one to pass on. Same call the
+                // stream arm below makes for the same reason.
+                socket.finish();
             }
             Downstream::Stream(WriteHalf::Stream(mut writer)) => {
                 let mut stdout = BufReader::with_capacity(buffer, stdout);
@@ -674,13 +679,17 @@ impl Dest {
 
     /// End of stream: flush a writer, or close the channel so the segment
     /// downstream sees EOF.
+    ///
+    /// A datagram destination has nothing to flush, and only a connected one
+    /// has an end of stream to pass on, which is
+    /// [`DatagramSocket::finish`]'s business rather than this one's.
     async fn finish(self) -> anyhow::Result<()> {
         match self {
             Dest::Stream(mut writer) => {
                 writer.flush().await?;
                 let _ = writer.shutdown().await;
             }
-            Dest::Datagram(_) => {}
+            Dest::Datagram(socket) => socket.finish(),
             Dest::Link(outlet) => drop(outlet),
         }
 

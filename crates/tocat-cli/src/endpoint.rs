@@ -25,6 +25,12 @@
 //! * `stream` is what an open endpoint hands back.
 //! * `parse` is the CLI grammar shared by every scheme.
 //! * `sys` is the system plumbing more than one transport needs.
+//! * `datagram` is the receive loop a forked connectionless listener needs,
+//!   shared by `udp-listen:` and `unix-dgram-listen:`.
+//!
+//! `unix` is the one module with children of its own, because the three
+//! `AF_UNIX` socket types share their address rules and differ only in what
+//! they carry.
 //!
 //! # Things that are easy to lose in a refactor
 //!
@@ -41,6 +47,7 @@
 //! now the `tee` plugin, which can sit anywhere in the pipeline rather than
 //! only at the ends.
 
+mod datagram;
 mod exec;
 mod file;
 mod parse;
@@ -59,6 +66,7 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Serialize};
 
 pub use self::{
+    datagram::Demux,
     exec::{Exec, System},
     file::File,
     parse::ParseEndpointError,
@@ -72,8 +80,12 @@ pub use self::{
     sys::{PathGuard, size_if_pipe},
     tcp::{Tcp, TcpListen},
     tty::Tty,
-    udp::{Udp, UdpDemux, UdpListen},
-    unix::{Unix, UnixListen},
+    udp::{Udp, UdpListen},
+    unix::{
+        Unix, UnixListen,
+        dgram::{UnixDgram, UnixDgramListen},
+        seqpacket::{UnixSeqpacket, UnixSeqpacketListen},
+    },
 };
 
 /// Where a listening endpoint binds when the spec names no host. Loopback, not
@@ -132,7 +144,7 @@ pub enum EndpointSpec {
         alias = "connect",
         alias = "CONNECT",
         alias = "tcpconnect",
-        alias = "TCPCONNECT",
+        alias = "TCPCONNECT"
     )]
     Tcp(Tcp),
     #[serde(
@@ -166,6 +178,42 @@ pub enum EndpointSpec {
         alias = "UDSLISTEN"
     )]
     UnixListen(UnixListen),
+    #[serde(
+        alias = "UNIX-SEQPACKET",
+        alias = "unix-seqpkt",
+        alias = "UNIX-SEQPKT",
+        alias = "uds-seqpacket",
+        alias = "UDS-SEQPACKET",
+        alias = "seqpacket",
+        alias = "SEQPACKET"
+    )]
+    UnixSeqpacket(UnixSeqpacket),
+    #[serde(
+        alias = "UNIX-SEQPACKET-LISTEN",
+        alias = "unix-seqpkt-listen",
+        alias = "UNIX-SEQPKT-LISTEN",
+        alias = "uds-seqpacket-listen",
+        alias = "UDS-SEQPACKET-LISTEN",
+        alias = "seqpacket-listen",
+        alias = "SEQPACKET-LISTEN"
+    )]
+    UnixSeqpacketListen(UnixSeqpacketListen),
+    #[serde(
+        alias = "UNIX-DGRAM",
+        alias = "unix-datagram",
+        alias = "UNIX-DATAGRAM",
+        alias = "uds-dgram",
+        alias = "UDS-DGRAM"
+    )]
+    UnixDgram(UnixDgram),
+    #[serde(
+        alias = "UNIX-DGRAM-LISTEN",
+        alias = "unix-datagram-listen",
+        alias = "UNIX-DATAGRAM-LISTEN",
+        alias = "uds-dgram-listen",
+        alias = "UDS-DGRAM-LISTEN"
+    )]
+    UnixDgramListen(UnixDgramListen),
     #[serde(alias = "fifo", alias = "FIFO", alias = "PIPE")]
     Pipe(Pipe),
     #[serde(alias = "open", alias = "FILE", alias = "OPEN")]
@@ -194,18 +242,36 @@ impl EndpointSpec {
     pub fn is_listen(&self) -> bool {
         matches!(
             self,
-            Self::TcpListen(_) | Self::UnixListen(_) | Self::UdpListen(_)
+            Self::TcpListen(_)
+                | Self::UnixListen(_)
+                | Self::UnixSeqpacketListen(_)
+                | Self::UnixDgramListen(_)
+                | Self::UdpListen(_)
         )
     }
 
+    /// True where the endpoint carries messages rather than a byte stream.
+    ///
+    /// Seqpacket is connection oriented and still belongs here: what decides
+    /// this is whether boundaries are data, not whether there is an accept.
     pub fn is_datagram(&self) -> bool {
-        matches!(self, Self::Udp(_) | Self::UdpListen(_))
+        matches!(
+            self,
+            Self::Udp(_)
+                | Self::UdpListen(_)
+                | Self::UnixSeqpacket(_)
+                | Self::UnixSeqpacketListen(_)
+                | Self::UnixDgram(_)
+                | Self::UnixDgramListen(_)
+        )
     }
 
     pub fn is_fork(&self) -> bool {
         match self {
             Self::TcpListen(e) => e.fork,
             Self::UnixListen(e) => e.fork,
+            Self::UnixSeqpacketListen(e) => e.fork,
+            Self::UnixDgramListen(e) => e.fork,
             Self::UdpListen(e) => e.fork,
             _ => false,
         }
@@ -219,6 +285,10 @@ impl EndpointSpec {
             Self::Stdio(e) => e.label(),
             Self::Unix(e) => e.label(),
             Self::UnixListen(e) => e.label(),
+            Self::UnixSeqpacket(e) => e.label(),
+            Self::UnixSeqpacketListen(e) => e.label(),
+            Self::UnixDgram(e) => e.label(),
+            Self::UnixDgramListen(e) => e.label(),
             Self::Pipe(e) => e.label(),
             Self::File(e) => e.label(),
             Self::Exec(e) => e.label(),
@@ -237,6 +307,12 @@ impl EndpointSpec {
                 max_connections, ..
             })
             | Self::UnixListen(UnixListen {
+                max_connections, ..
+            })
+            | Self::UnixSeqpacketListen(UnixSeqpacketListen {
+                max_connections, ..
+            })
+            | Self::UnixDgramListen(UnixDgramListen {
                 max_connections, ..
             })
             | Self::UdpListen(UdpListen {
@@ -283,6 +359,13 @@ impl EndpointSpec {
             Self::Stdio(e) => e.connect(buffer),
             Self::Unix(e) => e.connect().await,
             Self::UnixListen(e) => e.connect().await,
+            Self::UnixSeqpacket(e) => e.connect().await,
+            Self::UnixSeqpacketListen(e) => e.connect().await,
+            Self::UnixDgram(e) => e.connect().await,
+            // The only endpoint that needs the copy buffer to *open*: it
+            // learns its peer by receiving a message, and that message has to
+            // land somewhere before it can be handed on.
+            Self::UnixDgramListen(e) => e.connect(buffer).await,
             Self::Pipe(e) => e.connect(dir).await,
             Self::File(e) => e.connect(dir).await,
             Self::Exec(e) => e.connect(buffer).await,

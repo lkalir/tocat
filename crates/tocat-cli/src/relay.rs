@@ -39,13 +39,14 @@ use tokio::{
     net::{TcpListener, UnixListener},
     sync::Semaphore,
 };
+use tokio_seqpacket::UnixSeqpacketListener;
 use tracing::{Instrument, debug, error, info, warn};
 
 use crate::{
     buffer::Buffer,
     endpoint::{
-        Direction, EndpointSpec, EndpointStream, PathGuard, ReadHalf, SyncRead, SyncWrite,
-        UdpDemux, WriteHalf,
+        Demux, Direction, EndpointSpec, EndpointStream, PathGuard, ReadHalf, SyncRead, SyncWrite,
+        WriteHalf,
     },
     host::{ChannelPlan, Channels},
     progress::{self, Counter, Meter},
@@ -56,10 +57,13 @@ use crate::{
 enum Listener {
     Tcp(TcpListener),
     Unix(UnixListener),
-    /// UDP has no accept: a sender is discovered by receiving from it. The
-    /// socket is demultiplexed by source address instead, and each new address
-    /// arrives here as a session to serve.
-    Udp(UdpDemux),
+    /// Connection oriented like the others, message oriented like the one
+    /// below: an accepted seqpacket socket is a datagram endpoint.
+    Seqpacket(UnixSeqpacketListener),
+    /// A connectionless socket has no accept: a sender is discovered by
+    /// receiving from it. The socket is demultiplexed by source address
+    /// instead, and each new address arrives here as a session to serve.
+    Datagram(Demux),
 }
 
 impl Listener {
@@ -77,16 +81,24 @@ impl Listener {
             }
             EndpointSpec::UnixListen(e) => {
                 let l = e.bind().await?;
-                info!(path = %e.path.display(), "listening");
-                Ok((Listener::Unix(l), Some(PathGuard(e.path.clone()))))
+                info!(path = %e.path, "listening");
+                Ok((Listener::Unix(l), e.path.guard()))
             }
-            EndpointSpec::UdpListen(e) => Ok((
-                // The receive loop needs the copy buffer for the same reason
-                // the pump does: one receive is one datagram, and anything
-                // longer than the buffer is truncated by the kernel.
-                Listener::Udp(e.demux(buffer, shutdown).await?),
-                None,
+            EndpointSpec::UnixSeqpacketListen(e) => {
+                let l = e.bind().await?;
+                info!(path = %e.path, "listening");
+                Ok((Listener::Seqpacket(l), e.path.guard()))
+            }
+            // The receive loops need the copy buffer for the same reason the
+            // pump does: one receive is one message, and anything longer than
+            // the buffer is truncated by the kernel.
+            EndpointSpec::UnixDgramListen(e) => Ok((
+                Listener::Datagram(e.demux(buffer, shutdown).await?),
+                e.path.guard(),
             )),
+            EndpointSpec::UdpListen(e) => {
+                Ok((Listener::Datagram(e.demux(buffer, shutdown).await?), None))
+            }
             _ => anyhow::bail!("fork is only supported on listening endpoints"),
         }
     }
@@ -106,7 +118,15 @@ impl Listener {
                     .unwrap_or_else(|| "unnamed".to_string());
                 Ok((EndpointStream::unix(s), label))
             }
-            Listener::Udp(d) => d.accept().await,
+            Listener::Seqpacket(l) => {
+                let s = l.accept().await?;
+
+                // A connected unix socket is anonymous, so there is nothing to
+                // name the peer with. The stream form says the same thing
+                // whenever its client did not bind.
+                Ok((EndpointStream::seqpacket(s), "unnamed".to_string()))
+            }
+            Listener::Datagram(d) => d.accept().await,
         }
     }
 }

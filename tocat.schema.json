@@ -298,6 +298,18 @@
         },
         {
           "$ref": "#/$defs/unix-listen-endpoint"
+        },
+        {
+          "$ref": "#/$defs/unix-seqpacket-endpoint"
+        },
+        {
+          "$ref": "#/$defs/unix-seqpacket-listen-endpoint"
+        },
+        {
+          "$ref": "#/$defs/unix-dgram-endpoint"
+        },
+        {
+          "$ref": "#/$defs/unix-dgram-listen-endpoint"
         }
       ]
     },
@@ -313,6 +325,10 @@
         "udp-listen:9000",
         "unix:/tmp/tocat.sock",
         "unix-listen:/tmp/tocat.sock,fork,unlink,mode=660",
+        "unix-seqpacket:/run/app/app.sock",
+        "unix-seqpacket-listen:@tocat,fork",
+        "unix-dgram:/dev/log",
+        "unix-dgram-listen:/tmp/tocat.sock,unlink",
         "pipe:/tmp/events,create",
         "stdio",
         "-"
@@ -579,6 +595,232 @@
           "minimum": 1,
           "default": 1024,
           "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "unix-seqpacket-endpoint": {
+      "title": "unix-seqpacket",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "unix-seqpacket",
+            "UNIX-SEQPACKET",
+            "unix-seqpkt",
+            "UNIX-SEQPKT",
+            "uds-seqpacket",
+            "UDS-SEQPACKET",
+            "seqpacket",
+            "SEQPACKET"
+          ],
+          "description": "Unix seqpacket connect tag supporting standard, uppercase, and alias variations."
+        },
+        "path": {
+          "type": "string",
+          "description": "Path of the seqpacket socket to connect to. A leading @ names the Linux abstract namespace, which has no filesystem entry: unlink is unnecessary there and mode is rejected, since an abstract name carries no permissions.",
+          "examples": [
+            "/tmp/tocat.sock",
+            "/run/app/app.sock",
+            "@tocat"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "unix-seqpacket-listen-endpoint": {
+      "title": "unix-seqpacket-listen",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "unix-seqpacket-listen",
+            "UNIX-SEQPACKET-LISTEN",
+            "unix-seqpkt-listen",
+            "UNIX-SEQPKT-LISTEN",
+            "uds-seqpacket-listen",
+            "UDS-SEQPACKET-LISTEN",
+            "seqpacket-listen",
+            "SEQPACKET-LISTEN"
+          ],
+          "description": "Unix seqpacket listen tag supporting standard, uppercase, and alias variations."
+        },
+        "path": {
+          "type": "string",
+          "description": "Address of the seqpacket socket to create and listen on. A leading @ names the Linux abstract namespace, which has no filesystem entry: unlink is unnecessary there and mode is rejected, since an abstract name carries no permissions.",
+          "examples": [
+            "/tmp/tocat.sock",
+            "/run/app/app.sock",
+            "@tocat"
+          ]
+        },
+        "unlink": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove a stale socket before binding. tocat probes the address first and refuses to unlink one with a live owner."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0?[0-7]{3}$",
+          "description": "Permissions applied to the socket after bind, as an octal string. Rejected for an abstract address, which has no permissions to set.",
+          "examples": [
+            "600",
+            "660",
+            "666",
+            "0660"
+          ]
+        },
+        "fork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Spawn a new task for each incoming client connection. Each connection gets its own plugin instances; only side-channel writers are shared."
+        },
+        "max-connections": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "unix-dgram-endpoint": {
+      "title": "unix-dgram",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "unix-dgram",
+            "UNIX-DGRAM",
+            "unix-datagram",
+            "UNIX-DATAGRAM",
+            "uds-dgram",
+            "UDS-DGRAM"
+          ],
+          "description": "Unix datagram connect tag supporting standard, uppercase, and alias variations."
+        },
+        "path": {
+          "type": "string",
+          "description": "Address of the peer socket to send to. A leading @ names the Linux abstract namespace, which has no filesystem entry: unlink is unnecessary there and mode is rejected, since an abstract name carries no permissions.",
+          "examples": [
+            "/dev/log",
+            "/run/app/app.sock",
+            "@tocat"
+          ]
+        },
+        "bind": {
+          "type": "string",
+          "description": "Local address to bind before connecting, so the peer's replies have somewhere to go. Defaults to a path in the temporary directory, created with mode 600 and removed when the relay ends.",
+          "examples": [
+            "/run/app/reply.sock",
+            "@tocat-reply"
+          ]
+        },
+        "unlink": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove a stale local address before binding. Requires bind, since the generated address is fresh every run and the peer is not tocat's to remove."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0?[0-7]{3}$",
+          "description": "Permissions applied to the local address after bind, as an octal string. Rejected for an abstract address, which has no permissions to set.",
+          "examples": [
+            "600",
+            "660",
+            "666",
+            "0660"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "unix-dgram-listen-endpoint": {
+      "title": "unix-dgram-listen",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "unix-dgram-listen",
+            "UNIX-DGRAM-LISTEN",
+            "unix-datagram-listen",
+            "UNIX-DATAGRAM-LISTEN",
+            "uds-dgram-listen",
+            "UDS-DGRAM-LISTEN"
+          ],
+          "description": "Unix datagram listen tag supporting standard, uppercase, and alias variations."
+        },
+        "path": {
+          "type": "string",
+          "description": "Address of the socket to create and receive on. A leading @ names the Linux abstract namespace, which has no filesystem entry: unlink is unnecessary there and mode is rejected, since an abstract name carries no permissions.",
+          "examples": [
+            "/tmp/tocat.sock",
+            "/run/app/app.sock",
+            "@tocat"
+          ]
+        },
+        "unlink": {
+          "type": "boolean",
+          "default": false,
+          "description": "Remove a stale socket before binding. tocat probes the address first and refuses to unlink one with a live owner."
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0?[0-7]{3}$",
+          "description": "Permissions applied to the socket after bind, as an octal string. Rejected for an abstract address, which has no permissions to set.",
+          "examples": [
+            "600",
+            "660",
+            "666",
+            "0660"
+          ]
+        },
+        "fork": {
+          "type": "boolean",
+          "default": false,
+          "description": "Serve each sending address separately, with its own dialled peer and plugin instances. Senders without an address of their own cannot be told apart or replied to, and their messages are dropped."
+        },
+        "max-connections": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "Sessions served at once under fork. Messages from a new sender past the ceiling are dropped."
         },
         "name": {
           "type": "string",

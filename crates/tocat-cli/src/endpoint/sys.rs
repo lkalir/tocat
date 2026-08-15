@@ -21,6 +21,10 @@ use crate::endpoint::parse::ParseEndpointError;
 pub struct Mode(u32);
 
 impl Mode {
+    /// Owner only, for a socket tocat creates for its own use in a directory
+    /// anyone can write to.
+    pub(super) const PRIVATE: Self = Self(0o600);
+
     /// Apply the bits to `path`.
     ///
     /// Both `mkfifo` and `bind` mask their mode argument with the umask, so

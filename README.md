@@ -18,8 +18,7 @@ maintainability, and quality over time.
 tocat is in early days and has a long way to go before reaching parity with
 socat. The currently supported sources and sinks are
 
-- [ ] abstract
-- [ ] abstract-listen
+- [x] abstract (as `@name` on any unix scheme)
 - [x] exec
 - [x] file
 - [x] pipe / fifo
@@ -37,8 +36,10 @@ socat. The currently supported sources and sinks are
 - [x] udp-listen
 - [x] unix
 - [x] unix-listen
-- [ ] unix-dgram
-- [ ] unix-dgram-listen
+- [x] unix-dgram
+- [x] unix-dgram-listen
+- [x] unix-seqpacket
+- [x] unix-seqpacket-listen
 - [ ] websocket
 - [ ] websocket-listen
 

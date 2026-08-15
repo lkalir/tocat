@@ -325,7 +325,7 @@ impl Pty {
         info!(link = %link.display(), pts = %path.display(), "pty allocated");
 
         Ok(stream
-            .into_connection_with_guard(PathGuard(link.clone()))
+            .into_connection_with_guard(Some(PathGuard(link.clone())))
             .with_keepalive(pts))
     }
 }

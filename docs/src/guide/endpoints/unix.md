@@ -22,3 +22,41 @@ A bound socket is removed again when the relay finishes.
 
 In a config file the scheme may also be written `unix-connect`. On the command
 line only `unix:` is accepted.
+
+These two carry a byte stream. For local sockets that carry messages instead,
+see [`unix-seqpacket`](unix-seqpacket.md), which is connected and preserves
+boundaries, and [`unix-dgram`](unix-dgram.md), which is connectionless.
+
+## Addresses
+
+Every unix scheme takes its address the same way, on the command line and in a
+config file alike.
+
+A plain address is a path. An address beginning with `@` names the Linux
+abstract namespace, which lives outside the filesystem:
+
+```console
+$ tocat unix-listen:@tocat,fork tcp:localhost:8080
+$ tocat - unix:@tocat
+```
+
+```toml
+source = { type = "unix-listen", path = "@tocat", fork = true }
+```
+
+An abstract address has no directory entry, which changes three things.
+
+- **Nothing is created and nothing is cleaned up.** The kernel releases the name
+  when the last socket holding it closes, so there is no stale address for
+  `unlink` to clear and nothing left behind if tocat is killed.
+- **`mode` is rejected rather than ignored.** There is no file to change the
+  permissions of, and no permission check at all: anything in the network
+  namespace can connect. tocat fails the run instead of letting `mode=600` look
+  like it did something.
+- **Reaching one needs the same namespace.** Containers, and anything else with
+  a network namespace of its own, cannot see each other's abstract addresses
+  even when they share a filesystem. The reverse is also true, which is the
+  usual reason to prefer one.
+
+To use a file that really is called `@name`, write it as `./@name` or give the
+absolute path.
