@@ -20,9 +20,50 @@ $ tocat tcp-listen:9000 file:/tmp/capture,truncate
 | Option      | Description                                                                       |
 | ----------- | --------------------------------------------------------------------------------- |
 | `append`    | Append instead of overwriting                                                     |
-| `create`    | Create if missing. On by default                                                  |
+| `create`    | Create if missing. On by default, off under `device`                              |
 | `truncate`  | Truncate on open. Alias `trunc`. Dropped under `append`, where the two contradict |
+| `device`    | Require the path to already be a block or character device. Alias `dev`           |
+| `seek=SIZE` | Start at this offset rather than at the beginning                                 |
 | `name=TEXT` | Accepted, but the label stays `file://path`: a file is identified by its path     |
+
+## Devices
+
+A block device or a plain character device is a file that happens to live in
+`/dev`, so it belongs here rather than in a scheme of its own. Two options make
+that safe and useful.
+
+**`device` asserts the path already is one.** Without it, `create` is on, so a
+wrong path or an unplugged adapter turns into a regular file of that name the
+moment it is used as a sink. As root that is a new file in `/dev`. With it, the
+path is checked before anything is opened, and the error tells you whether it
+was missing or was the wrong kind of thing.
+
+```console
+$ tocat file:/dev/sda,device file:disk.img,truncate
+```
+
+`device` contradicts `create`, `truncate` and `append`, and asking for both is
+an error rather than a silent override: a device has no length to change, and
+nothing to create.
+
+**`seek=SIZE` starts somewhere other than the beginning**, reading from that
+offset as the source and writing to it as the sink. It takes the usual size
+suffixes, so `seek=1MiB` is a mebibyte in.
+
+```console
+$ tocat file:/dev/sda,device,seek=1MiB file:partition.img,truncate
+```
+
+An offset into a block device that is not a multiple of its block size is
+warned about rather than refused, since the kernel will not complain and the
+symptom is a shifted image rather than an error. `seek` contradicts `append`,
+where every write goes to the end whatever the offset says.
+
+A terminal is the exception to all of this. It is duplex on one descriptor,
+which this scheme cannot produce, and its settings have to be restored
+afterwards, which this scheme has nowhere to keep: see [`tty`](tty.md).
+
+## FIFOs
 
 `file:` pointed at a FIFO works, but the open blocks until a peer appears and
 the stream ends when the last writer leaves. That is a legitimate thing to want,

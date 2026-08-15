@@ -41,6 +41,11 @@ pub enum ParseEndpointError {
         scheme: &'static str,
         option: String,
     },
+    /// Two options that parse but cannot both mean anything.
+    Conflict {
+        scheme: &'static str,
+        reason: &'static str,
+    },
     InvalidPort(String),
     InvalidMode(String),
     InvalidSize(String),
@@ -56,6 +61,9 @@ impl std::fmt::Display for ParseEndpointError {
             ParseEndpointError::UnknownScheme(body) => write!(f, "unknown scheme: {body}"),
             ParseEndpointError::UnsupportedOption { scheme, option } => {
                 write!(f, "unsupported option for {scheme}: {option}")
+            }
+            ParseEndpointError::Conflict { scheme, reason } => {
+                write!(f, "contradictory options for {scheme}: {reason}")
             }
             ParseEndpointError::InvalidPort(body) => write!(f, "invalid port: {body}"),
             ParseEndpointError::InvalidMode(body) => write!(f, "invalid permissions: {body}"),

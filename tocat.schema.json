@@ -634,12 +634,30 @@
         "create": {
           "type": "boolean",
           "default": true,
-          "description": "Create the file if it does not exist. Sink only."
+          "description": "Create the file if it does not exist. Sink only. On unless turned off, and off under `device`, where asking for both is an error rather than an override."
         },
         "truncate": {
           "type": "boolean",
           "default": false,
           "description": "Truncate on open. Ignored when appending. Sink only."
+        },
+        "device": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require the path to already exist and be a block or character device, and do not create it. Without this a wrong or unplugged device path becomes a regular file of that name when used as the sink. Contradicts create, truncate and append. A terminal is not this: use the tty endpoint, which is duplex and restores the settings it found."
+        },
+        "seek": {
+          "description": "Start at this offset rather than at the beginning: reading from it as the source, writing to it as the sink. A plain byte count or a binary suffix ('512', '64k', '1MiB'). Contradicts append, where every write goes to the end. An offset into a block device that is not a multiple of its block size is warned about rather than refused.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
         },
         "name": {
           "type": "string",
