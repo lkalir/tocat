@@ -43,3 +43,7 @@ platform allows it, see [Buffers](../buffers.md).
 To put a filter *between* the endpoints rather than at one end, use
 [`process`](../plugins/process.md), which has the same two ways of naming a
 child and adds control over its stderr.
+
+For a child that needs a terminal rather than a pair of pipes, use
+[`pty-exec`](pty.md). Anything interactive wants it, and so does anything whose
+output never appears until it exits, which is libc block-buffering a pipe.

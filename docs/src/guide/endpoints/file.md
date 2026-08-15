@@ -4,6 +4,14 @@ Alias: `open`. Files are unidirectional. They are read when they are the source
 and written to when they are the sink, so the writing options are simply not
 consulted on the source side, where the file is opened read-only.
 
+Being unidirectional is what makes a transfer end.
+`tocat file:in.bin
+tcp:host:9000` exits at end of file because the reverse
+direction does not exist, so nothing is left waiting on the peer. Opening the
+file both ways would keep the relay alive indefinitely, which is why a device
+that genuinely needs both directions gets its own scheme rather than a flag
+here: see [`tty`](tty.md).
+
 ```console
 $ tocat file:/tmp/payload tcp:localhost:9000
 $ tocat tcp-listen:9000 file:/tmp/capture,truncate

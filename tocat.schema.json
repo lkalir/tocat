@@ -267,6 +267,12 @@
           "$ref": "#/$defs/pipe-endpoint"
         },
         {
+          "$ref": "#/$defs/pty-endpoint"
+        },
+        {
+          "$ref": "#/$defs/pty-exec-endpoint"
+        },
+        {
           "$ref": "#/$defs/stdio-endpoint"
         },
         {
@@ -277,6 +283,9 @@
         },
         {
           "$ref": "#/$defs/tcp-listen-endpoint"
+        },
+        {
+          "$ref": "#/$defs/tty-endpoint"
         },
         {
           "$ref": "#/$defs/udp-endpoint"
@@ -1633,6 +1642,220 @@
               "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
             }
           ]
+        }
+      }
+    },
+    "pty-endpoint": {
+      "title": "pty",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "const": "pty"
+        },
+        "link": {
+          "type": "string",
+          "description": "Symlink to create pointing at the allocated slave device, removed when the relay exits. This is how another program finds the device. Without one the path is only logged. A dangling link left by a previous run is replaced; a live one is not.",
+          "examples": [
+            "/tmp/ttyfake"
+          ]
+        },
+        "raw": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass bytes through untouched. A terminal in cooked mode translates carriage returns, turns control characters into signals, and refuses a line longer than 4096 bytes, so leave this on for anything but text typed by a person."
+        },
+        "echo": {
+          "type": "boolean",
+          "default": false,
+          "description": "Echo input back at the writer. Off because on a relay that is a loop rather than a feature."
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^ *[0-9]+ *[xX] *[0-9]+ *$",
+          "description": "Window size reported to the program, as ROWSxCOLS. Unset leaves whatever the kernel gave, which a fresh pty reports as 0x0. Fixed for the life of the connection: nothing relays a resize.",
+          "examples": [
+            "24x80",
+            "40x120"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "pty-exec-endpoint": {
+      "title": "pty-exec",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "argv"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "pty-exec",
+            "pty_exec",
+            "ptyexec"
+          ]
+        },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Program and arguments, run on a new pseudo-terminal with that terminal as the child's controlling terminal. Under `shell` this is a single command line instead. The pty is the child's stdin, stdout and stderr, so unlike exec its diagnostics are relayed.",
+          "examples": [
+            [
+              "bash"
+            ],
+            [
+              "htop"
+            ]
+          ]
+        },
+        "shell": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run argv[0] through $SHELL -c rather than executing it directly, which is what system is to exec."
+        },
+        "term": {
+          "type": "string",
+          "description": "What to set TERM to for the child. Unset leaves the relay's own value.",
+          "examples": [
+            "xterm-256color",
+            "dumb"
+          ]
+        },
+        "raw": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass bytes through untouched. A terminal in cooked mode translates carriage returns, turns control characters into signals, and refuses a line longer than 4096 bytes, so leave this on for anything but text typed by a person."
+        },
+        "echo": {
+          "type": "boolean",
+          "default": false,
+          "description": "Echo input back at the writer. Off because on a relay that is a loop rather than a feature."
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^ *[0-9]+ *[xX] *[0-9]+ *$",
+          "description": "Window size reported to the program, as ROWSxCOLS. Unset leaves whatever the kernel gave, which a fresh pty reports as 0x0. Fixed for the life of the connection: nothing relays a resize.",
+          "examples": [
+            "24x80",
+            "40x120"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "tty-endpoint": {
+      "title": "tty",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "path"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "tty",
+            "serial"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "description": "Terminal to open: a pts somebody else made, or a serial device. Refused if it is not a terminal, rather than opened or created as a regular file. The settings found at open are restored when the relay ends.",
+          "examples": [
+            "/dev/ttyUSB0",
+            "/dev/pts/5"
+          ]
+        },
+        "raw": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass bytes through untouched. A terminal in cooked mode translates carriage returns, turns control characters into signals, and refuses a line longer than 4096 bytes, so leave this on for anything but text typed by a person."
+        },
+        "echo": {
+          "type": "boolean",
+          "default": false,
+          "description": "Echo input back at the writer. Off because on a relay that is a loop rather than a feature."
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^ *[0-9]+ *[xX] *[0-9]+ *$",
+          "description": "Window size reported to the program, as ROWSxCOLS. Unset leaves whatever the kernel gave, which a fresh pty reports as 0x0. Fixed for the life of the connection: nothing relays a resize.",
+          "examples": [
+            "24x80",
+            "40x120"
+          ]
+        },
+        "speed": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Line speed in baud. Unset leaves whatever the device had, which for a serial cable reads as noise rather than as an error.",
+          "examples": [
+            9600,
+            115200
+          ]
+        },
+        "bits": {
+          "type": "integer",
+          "enum": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "default": 8,
+          "description": "Character size in bits."
+        },
+        "parity": {
+          "enum": [
+            "none",
+            "even",
+            "odd"
+          ],
+          "default": "none",
+          "description": "Parity bit, if there is one."
+        },
+        "stop2": {
+          "type": "boolean",
+          "default": false,
+          "description": "Two stop bits rather than one."
+        },
+        "flow": {
+          "enum": [
+            "none",
+            "rts",
+            "xon"
+          ],
+          "default": "none",
+          "description": "Flow control: rts for the hardware lines, xon for XON/XOFF bytes in the data."
+        },
+        "clocal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ignore modem control lines. On by default because without it the open itself waits for carrier detect, which a three-wire cable never asserts and which looks like a hang. Turn it off when you have modem control and want to know when the far end goes."
+        },
+        "exclusive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Claim the device exclusively, so a second unprivileged open fails rather than interleaving its reads with the relay's. Worth setting on anything long-running: contention on a tty looks like corruption."
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom display name for the endpoint."
         }
       }
     }

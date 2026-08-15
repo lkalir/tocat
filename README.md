@@ -24,7 +24,7 @@ socat. The currently supported sources and sinks are
 - [x] file
 - [x] pipe / fifo
 - [ ] proxy
-- [ ] pty
+- [x] pty
 - [ ] socks
 - [x] stdio
 - [x] system
@@ -32,6 +32,7 @@ socat. The currently supported sources and sinks are
 - [x] tcp-listen
 - [ ] tls
 - [ ] tls-listen
+- [x] tty
 - [x] udp
 - [x] udp-listen
 - [x] unix

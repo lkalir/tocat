@@ -28,6 +28,9 @@ removed for schemes and option keys. Values remain untouched.
 | [`pipe`](endpoints/pipe.md)        | `fifo`                      | bytes     | one way |
 | [`exec`](endpoints/exec.md)        |                             | bytes     | duplex  |
 | [`system`](endpoints/exec.md)      |                             | bytes     | duplex  |
+| [`pty`](endpoints/pty.md)          |                             | bytes     | duplex  |
+| [`pty-exec`](endpoints/pty.md)     |                             | bytes     | duplex  |
+| [`tty`](endpoints/tty.md)          | `serial`                    | bytes     | duplex  |
 | [`stdio`](endpoints/stdio.md)      | `-`                         | bytes     | duplex  |
 
 Two properties in that table decide how the rest of tocat behaves around an
@@ -37,6 +40,14 @@ endpoint.
 with duplex endpoints on both sides relays in both directions. A one-way
 endpoint is read when it is the source and written when it is the sink, and the
 opposite path has nothing to carry.
+
+That second half is what makes a one-way transfer end.
+`tocat file:in.bin
+tcp:host:9000` exits at end of file because the reverse
+direction does not exist rather than because it finished: a direction with no
+half to read is skipped outright, so nothing is left waiting on the peer. A
+duplex endpoint has no such exit, which is why `file:` opens by role even where
+the path underneath it could be opened both ways.
 
 **Bytes or datagrams.** A byte endpoint carries a stream, and a chunk is an
 arbitrary slice of it. A datagram endpoint carries messages, and the boundaries
@@ -53,9 +64,9 @@ by. Labels appear in log records, in `tee` headers, and in the
 $ tocat 'tcp-listen:9000,fork,name=frontend' 'tcp:10.0.0.5:8080,name=backend'
 ```
 
-Three schemes keep their own label even when `name` is given, because the target
-is the identity: `file:` shows its path, and `exec:` and `system:` show the
-command line.
+Four schemes keep their own label even when `name` is given, because the target
+is the identity: `file:` shows its path, and `exec:`, `system:` and `pty-exec:`
+show the command line.
 
 Default labels are `tcp://addr`, `udp://addr`, `unix://path`, `pipe://path`,
 `file://path`, `EXEC(argv)`, `SYSTEM(command)` and `STDIO`. Under `fork` the

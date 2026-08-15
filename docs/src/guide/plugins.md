@@ -195,7 +195,8 @@ the time the framer sees them.
 
 The check goes as far as confirming something downstream can put the boundaries
 on the wire. It cannot confirm the bytes reach the peer intact, or that the peer
-unframes them: see [What framing survives](plugins/frame.md#what-framing-survives-and-what-it-does-not).
+unframes them: see
+[What framing survives](plugins/frame.md#what-framing-survives-and-what-it-does-not).
 
 One more thing a datagram sink does silently: an empty emission is not sent. At
 end of stream a pipeline is drained once more, and on a datagram sink that would

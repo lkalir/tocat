@@ -18,6 +18,10 @@
 //! adding a scheme is a new file plus one variant and one line in the scheme
 //! table in `parse`.
 //!
+//! A `pty:` endpoint keeps its slave descriptor open for the life of the run.
+//! Without a holder the master reports the pair as hung up, and the relay ends
+//! before a peer has had a chance to open the device.
+//!
 //! * `stream` is what an open endpoint hands back.
 //! * `parse` is the CLI grammar shared by every scheme.
 //! * `sys` is the system plumbing more than one transport needs.
@@ -41,10 +45,12 @@ mod exec;
 mod file;
 mod parse;
 mod pipe;
+mod pty;
 mod stdio;
 mod stream;
 mod sys;
 mod tcp;
+mod tty;
 mod udp;
 mod unix;
 
@@ -57,6 +63,7 @@ pub use self::{
     file::File,
     parse::ParseEndpointError,
     pipe::Pipe,
+    pty::{Pty, PtyExec},
     stdio::Stdio,
     stream::{
         BoxRead, BoxWrite, Connection, DatagramSocket, EndpointStream, ReadHalf, SyncHalves,
@@ -64,6 +71,7 @@ pub use self::{
     },
     sys::{PathGuard, size_if_pipe},
     tcp::{Tcp, TcpListen},
+    tty::Tty,
     udp::{Udp, UdpDemux, UdpListen},
     unix::{Unix, UnixListen},
 };
@@ -144,6 +152,12 @@ pub enum EndpointSpec {
     File(File),
     Exec(Exec),
     System(System),
+    #[serde(alias = "PTY")]
+    Pty(Pty),
+    #[serde(alias = "PTY-EXEC", alias = "ptyexec", alias = "PTYEXEC")]
+    PtyExec(PtyExec),
+    #[serde(alias = "TTY", alias = "serial", alias = "SERIAL")]
+    Tty(Tty),
     #[serde(alias = "UDP", alias = "udp-connect", alias = "UDP-CONNECT")]
     Udp(Udp),
     #[serde(alias = "UDP-LISTEN", alias = "udplisten", alias = "UDPLISTEN")]
@@ -183,6 +197,9 @@ impl EndpointSpec {
             Self::File(e) => e.label(),
             Self::Exec(e) => e.label(),
             Self::System(e) => e.label(),
+            Self::Pty(e) => e.label(),
+            Self::PtyExec(e) => e.label(),
+            Self::Tty(e) => e.label(),
             Self::Udp(e) => e.label(),
             Self::UdpListen(e) => e.label(),
         }
@@ -244,6 +261,9 @@ impl EndpointSpec {
             Self::File(e) => e.connect(dir).await,
             Self::Exec(e) => e.connect(buffer).await,
             Self::System(e) => e.connect(buffer).await,
+            Self::Pty(e) => e.connect().await,
+            Self::PtyExec(e) => e.connect().await,
+            Self::Tty(e) => e.connect().await,
             Self::Udp(e) => e.connect().await,
             Self::UdpListen(e) => e.connect().await,
         }

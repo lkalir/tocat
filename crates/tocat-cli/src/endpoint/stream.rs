@@ -6,6 +6,10 @@
 //! synchronous path produces [`SyncHalves`], used when both ends are
 //! blocking-backed and the async wrappers would only add copies.
 //!
+//! [`Connection::keepalive`] is the general form of what [`PathGuard`] does
+//! for a path: something the connection created or borrowed, whose cleanup has
+//! to wait until the transfer is over.
+//!
 //! [`EndpointStream::Datagram`] is deliberately not `AsyncRead`/`AsyncWrite`:
 //! those traits describe a byte stream and have nowhere to put a message
 //! boundary. Everything downstream of an endpoint therefore has to handle both
@@ -46,6 +50,23 @@ pub struct SyncHalves {
 pub struct Connection {
     pub stream: EndpointStream,
     pub guard: Option<PathGuard>,
+    /// Anything else the connection has to outlive, dropped with it.
+    ///
+    /// Two endpoints need this and neither needs the same thing, which is why
+    /// it is opaque rather than a second typed field. `pty:` keeps its slave
+    /// descriptor here, since without a holder the master reports the pair as
+    /// hung up. `tty:` keeps the settings it found on the device, since those
+    /// belong to the system and have to go back.
+    pub keepalive: Option<Box<dyn Send>>,
+}
+
+impl Connection {
+    /// Attach something whose drop has to wait for the connection to end.
+    #[must_use]
+    pub fn with_keepalive(mut self, keepalive: impl Send + 'static) -> Self {
+        self.keepalive = Some(Box::new(keepalive));
+        self
+    }
 }
 
 pub enum EndpointStream {
@@ -109,6 +130,7 @@ impl EndpointStream {
         Connection {
             stream: self,
             guard: None,
+            keepalive: None,
         }
     }
 
@@ -116,6 +138,7 @@ impl EndpointStream {
         Connection {
             stream: self,
             guard: Some(guard),
+            keepalive: None,
         }
     }
 
