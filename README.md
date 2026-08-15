@@ -52,7 +52,7 @@ The plugins that ship with tocat are
 - [x] frame / unframe - apply or strip framing to and from streams
 - [x] hash - digest stream contents
 - [x] hexify / unhexify - encoding as hexadecimal strings
-- [x] limit - terminate stream after N bytes
+- [x] limit - terminate stream after N bytes or N packets
 - [ ] pcap - save stream as pcap
 - [x] process - delegate to subprocess using stdin/stdout
 - [x] rate - measure and report throughput

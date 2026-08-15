@@ -1646,11 +1646,27 @@
     "plugin-limit": {
       "title": "limit",
       "type": "object",
-      "description": "End the transfer after a fixed number of bytes. Reaching the limit stops the read the way upstream end of stream would: emitted bytes are written, the remaining stages are finished and flushed, and tocat exits successfully. `at-limit` decides what happens to the one chunk that straddles the limit.",
+      "description": "End the transfer after a fixed number of bytes or packets. Reaching the limit stops the read the way upstream end of stream would: emitted bytes are written, the remaining stages are finished and flushed, and tocat exits successfully. An entry counts one or the other: give `bytes` or `packets`, and two limit stages to stop on whichever is reached first. `at-limit` decides what happens to the one chunk that straddles a byte limit.",
       "additionalProperties": false,
       "required": [
-        "name",
-        "bytes"
+        "name"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "bytes"
+          ]
+        },
+        {
+          "required": [
+            "packets"
+          ],
+          "not": {
+            "required": [
+              "at-limit"
+            ]
+          }
+        }
       ],
       "properties": {
         "name": {
@@ -1681,10 +1697,23 @@
             }
           ]
         },
+        "packets": {
+          "description": "How many chunks to let past before ending the stream. Written the way sizes are, with the same binary suffixes, so '1k' is 1024 chunks; it is logged back as a plain count. One chunk is one delivery from whatever sits above the stage, which on a datagram path is exactly one message and on a byte stream is one read, sized by `buffer-size` and by when the peer's bytes arrived. Counted at this stage's own position, and per direction. The chunk that reaches the count is passed on whole, so `at-limit` decides nothing here and is refused.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        },
         "at-limit": {
           "type": "string",
           "default": "exact",
-          "description": "What to do with the one chunk that crosses the limit. 'drop' discards it whole, so at most `bytes` are passed on. 'exact' splits it, so exactly `bytes` are passed on. 'overshoot' forwards it whole, so at least `bytes` are passed on and no message is cut in half. Splitting is the only mode that is unsafe on a datagram path.",
+          "description": "What to do with the one chunk that crosses a byte limit. 'drop' discards it whole, so at most `bytes` are passed on. 'exact' splits it, so exactly `bytes` are passed on. 'overshoot' forwards it whole, so at least `bytes` are passed on and no message is cut in half. Splitting is the only mode that is unsafe on a datagram path. An option of `bytes` only.",
           "enum": [
             "drop",
             "exact",

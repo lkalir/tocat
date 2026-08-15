@@ -27,20 +27,20 @@ ignore the ones in a config file.
 
 ## What ships with tocat
 
-| Plugin                            | Does                                  | Payload   | Runs        | Datagram paths                    |
-| --------------------------------- | ------------------------------------- | --------- | ----------- | --------------------------------- |
-| [`tee`](plugins/tee.md)           | Mirror the bytes to a file or stderr  | untouched | inline      | safe                              |
-| [`hash`](plugins/hash.md)         | Digest what crosses this point        | untouched | inline      | safe                              |
-| [`rate`](plugins/rate.md)         | Report throughput at this point       | untouched | inline      | safe                              |
-| [`throttle`](plugins/throttle.md) | Hold the path to a bandwidth ceiling  | untouched | inline      | safe                              |
-| [`limit`](plugins/limit.md)       | End the transfer after N bytes        | truncated | inline      | safe unless `at-limit=exact`      |
-| [`block`](plugins/block.md)       | Cut the path into fixed-size records  | reframed  | inline      | warns: boundaries are its own     |
-| [`frame`](plugins/frame.md)       | Mark or find message boundaries       | reframed  | inline      | `frame` safe, `unframe` warns     |
-| [`base64`](plugins/base64.md)     | Base64-encode or decode this path     | rewritten | inline      | safe                              |
-| [`compress`](plugins/compress.md) | zstd compress or decompress           | rewritten | detached    | warns                             |
-| [`process`](plugins/process.md)   | Pipe the path through a child process | rewritten | own process | warns                             |
-| [`timeout`](plugins/timeout.md)   | End the path once it has gone quiet   | untouched | inline      | safe                              |
-| [`wasm`](plugins/wasm.md)         | Run a WebAssembly guest as a stage    | guest's   | detached    | the guest declares, default warns |
+| Plugin                            | Does                                      | Payload   | Runs        | Datagram paths                    |
+| --------------------------------- | ----------------------------------------- | --------- | ----------- | --------------------------------- |
+| [`tee`](plugins/tee.md)           | Mirror the bytes to a file or stderr      | untouched | inline      | safe                              |
+| [`hash`](plugins/hash.md)         | Digest what crosses this point            | untouched | inline      | safe                              |
+| [`rate`](plugins/rate.md)         | Report throughput at this point           | untouched | inline      | safe                              |
+| [`throttle`](plugins/throttle.md) | Hold the path to a bandwidth ceiling      | untouched | inline      | safe                              |
+| [`limit`](plugins/limit.md)       | End the transfer after N bytes or packets | truncated | inline      | safe unless `at-limit=exact`      |
+| [`block`](plugins/block.md)       | Cut the path into fixed-size records      | reframed  | inline      | warns: boundaries are its own     |
+| [`frame`](plugins/frame.md)       | Mark or find message boundaries           | reframed  | inline      | `frame` safe, `unframe` warns     |
+| [`base64`](plugins/base64.md)     | Base64-encode or decode this path         | rewritten | inline      | safe                              |
+| [`compress`](plugins/compress.md) | zstd compress or decompress               | rewritten | detached    | warns                             |
+| [`process`](plugins/process.md)   | Pipe the path through a child process     | rewritten | own process | warns                             |
+| [`timeout`](plugins/timeout.md)   | End the path once it has gone quiet       | untouched | inline      | safe                              |
+| [`wasm`](plugins/wasm.md)         | Run a WebAssembly guest as a stage        | guest's   | detached    | the guest declares, default warns |
 
 "Datagram paths" is what each stage reports about itself, and it is what tocat
 checks when the destination on that path is a datagram endpoint. The default for
