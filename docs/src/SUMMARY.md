@@ -20,6 +20,7 @@
   - [compress and decompress](guide/plugins/compress.md)
   - [frame and unframe](guide/plugins/frame.md)
   - [hash](guide/plugins/hash.md)
+  - [hexify](guide/plugins/hexify.md)
   - [limit](guide/plugins/limit.md)
   - [process](guide/plugins/process.md)
   - [rate](guide/plugins/rate.md)

@@ -12,7 +12,7 @@ $ tocat - base64 unbase64:reverse tcp:relay.internal:9000
 text.
 
 The far end of the link runs the mirror image, and the two relays form a
-base64-armoured tunnel over a hop that would otherwise mangle binary.
+base64-armored tunnel over a hop that would otherwise mangle binary.
 
 | Option            | Plugin     | Description                                                                       |
 | ----------------- | ---------- | --------------------------------------------------------------------------------- |

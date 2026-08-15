@@ -26,7 +26,7 @@
 //! what anyone wants. Declare the pair explicitly, one stage per direction:
 //!
 //! ```toml
-//! # near end of a base64-armoured hop
+//! # near end of a base64-armored hop
 //! [[plugin]]
 //! name = "frame"
 //! direction = "sink-to-source"

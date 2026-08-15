@@ -28,6 +28,9 @@ mod frame;
 #[cfg(feature = "hash")]
 mod hash;
 
+#[cfg(feature = "hexify")]
+mod hexify;
+
 #[cfg(feature = "limit")]
 mod limit;
 
@@ -87,6 +90,12 @@ pub fn register_native(registry: &mut Registry) {
 
     #[cfg(feature = "hash")]
     registry.register(hash::HashFactory);
+
+    #[cfg(feature = "hexify")]
+    {
+        registry.register(hexify::HexifyFactory);
+        registry.register(hexify::UnhexifyFactory);
+    }
 
     #[cfg(feature = "limit")]
     registry.register(limit::LimitFactory);

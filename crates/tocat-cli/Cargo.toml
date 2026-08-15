@@ -51,6 +51,7 @@ all-plugins = [
   "compress",
   "frame",
   "hash",
+  "hexify",
   "limit",
   "process",
   "rate",
@@ -65,6 +66,7 @@ all-plugins-no-wasm = [
   "compress",
   "frame",
   "hash",
+  "hexify",
   "limit",
   "process",
   "rate",
@@ -77,6 +79,7 @@ block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
 frame = ["tocat-plugins/frame"]
 hash = ["tocat-plugins/hash"]
+hexify = ["tocat-plugins/hexify"]
 limit = ["tocat-plugins/limit"]
 process = ["tocat-plugins/process"]
 rate = ["tocat-plugins/rate"]
