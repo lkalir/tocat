@@ -108,6 +108,12 @@
           "$ref": "#/$defs/plugin-hash"
         },
         {
+          "$ref": "#/$defs/plugin-hexify"
+        },
+        {
+          "$ref": "#/$defs/plugin-unhexify"
+        },
+        {
           "$ref": "#/$defs/plugin-timeout"
         },
         {
@@ -1795,7 +1801,9 @@
               "block",
               "hash",
               "timeout",
-              "wasm"
+              "wasm",
+              "hexify",
+              "unhexify"
             ]
           },
           "description": "Plugin to instantiate."
@@ -2066,6 +2074,66 @@
           "type": "boolean",
           "default": true,
           "description": "Append to an existing file rather than truncating it."
+        }
+      }
+    },
+    "plugin-hexify": {
+      "title": "hexify",
+      "type": "object",
+      "description": "Hex-encode this path, one complete message per chunk. Doubles the payload exactly and without padding, so every source byte is two characters at a fixed offset and the wire stays sliceable and greppable. Asymmetric: pair it with an unhexify entry on the opposite direction rather than using direction = 'both'.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "hexify",
+          "description": "Selects the hexify plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
+        },
+        "case": {
+          "enum": [
+            "lowercase",
+            "uppercase"
+          ],
+          "default": "lowercase",
+          "description": "Which case to write: 'lowercase' emits a-f, 'uppercase' emits A-F. Unlike the base64 alphabet option this need not agree with the far end, since unhexify accepts either case and mixtures of the two. It decides only what a human reading the wire sees. Aliases: lower, upper."
+        }
+      }
+    },
+    "plugin-unhexify": {
+      "title": "unhexify",
+      "type": "object",
+      "description": "Hex-decode this path, one complete message per chunk. A chunk with an odd number of digits is a configuration error rather than a payload: message boundaries come from the datagram path or from an unframe stage ahead of this one, and hex has the shortest group of any of these codecs, so half of all bad cuts land on one. Whitespace is not stripped and a 0x prefix is not accepted; this is a wire codec, not a parser for hex written for people.",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "const": "unhexify",
+          "description": "Selects the unhexify plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and as the default label for stages that print one. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
         }
       }
     },
