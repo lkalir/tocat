@@ -1294,10 +1294,11 @@
             "cobs",
             "slip",
             "length",
-            "netstring"
+            "netstring",
+            "null"
           ],
           "default": "delimiter",
-          "description": "How messages are marked on the wire; both ends of a hop must agree. 'delimiter' terminates each message with the delimiter byte string. 'cobs' and 'slip' escape the payload so the terminator cannot appear in it, which is exact for arbitrary binary; prefer cobs unless the peer requires slip. 'length' prefixes each message with its length in a fixed-width header. 'netstring' wraps each message as LEN:payload, with a decimal length. The counted modes (length, netstring) can refuse an oversized message from its header, but cannot resynchronise a stream once it desynchronises."
+          "description": "How messages are marked on the wire; both ends of a hop must agree. 'delimiter' terminates each message with the delimiter byte string. 'cobs' and 'slip' escape the payload so the terminator cannot appear in it, which is exact for arbitrary binary; prefer cobs unless the peer requires slip. 'length' prefixes each message with its length in a fixed-width header. 'netstring' wraps each message as LEN:payload, with a decimal length. The counted modes (length, netstring) can refuse an oversized message from its header, but cannot resynchronise a stream once it desynchronises. 'null' writes no framing and reads none, but still reports that boundaries are marked, which is how a stage that requires them is satisfied on a path whose far end is a terminal rather than a peer. Nothing downstream can recover message boundaries from it, and nothing detects that."
         },
         "delimiter": {
           "type": "string",
@@ -1359,10 +1360,11 @@
             "cobs",
             "slip",
             "length",
-            "netstring"
+            "netstring",
+            "null"
           ],
           "default": "delimiter",
-          "description": "How messages are marked on the wire; both ends of a hop must agree. 'delimiter' terminates each message with the delimiter byte string. 'cobs' and 'slip' escape the payload so the terminator cannot appear in it, which is exact for arbitrary binary; prefer cobs unless the peer requires slip. 'length' prefixes each message with its length in a fixed-width header. 'netstring' wraps each message as LEN:payload, with a decimal length. The counted modes (length, netstring) can refuse an oversized message from its header, but cannot resynchronise a stream once it desynchronises."
+          "description": "How messages are marked on the wire; both ends of a hop must agree. 'delimiter' terminates each message with the delimiter byte string. 'cobs' and 'slip' escape the payload so the terminator cannot appear in it, which is exact for arbitrary binary; prefer cobs unless the peer requires slip. 'length' prefixes each message with its length in a fixed-width header. 'netstring' wraps each message as LEN:payload, with a decimal length. The counted modes (length, netstring) can refuse an oversized message from its header, but cannot resynchronise a stream once it desynchronises. 'null' writes no framing and reads none, but still reports that boundaries are marked, which is how a stage that requires them is satisfied on a path whose far end is a terminal rather than a peer. Nothing downstream can recover message boundaries from it, and nothing detects that."
         },
         "delimiter": {
           "type": "string",
@@ -1397,7 +1399,7 @@
             "error",
             "drop"
           ],
-          "description": "What to do with bytes left over when the stream ends part way through a message. Defaults to emit in delimiter mode, where a last line without a newline is routine, and to error elsewhere, where a partial frame was cut off in transit. The counted modes (length, netstring) reject emit: what is left is a header and part of a payload, with no message in it."
+          "description": "What to do with bytes left over when the stream ends part way through a message. Defaults to emit in delimiter mode, where a last line without a newline is routine, and to error elsewhere, where a partial frame was cut off in transit. The counted modes (length, netstring) reject emit: what is left is a header and part of a payload, with no message in it. Null mode rejects this option outright, holding nothing back and so never leaving a partial message over."
         }
       }
     },

@@ -187,6 +187,9 @@ There are two ways to satisfy one. A datagram endpoint on the relevant side
 supplies boundaries by itself, so nothing more is needed on a UDP path. On a
 byte stream, [`frame` and `unframe`](plugins/frame.md) are what put them there:
 `unframe` above a stage that reads messages, `frame` below one that writes them.
+Either in [`mode=null`](plugins/frame.md#null) satisfies the requirement without
+writing any framing, which is what you want when the far end is a terminal
+rather than a peer, and is not what you want otherwise.
 
 The scan stops at the first stage that settles the question, so a `frame`
 anywhere below covers everything under it: once the boundary is in the payload

@@ -18,9 +18,10 @@
 //!
 //! # Modes
 //!
-//! Five, in two families. The terminator family scans for a byte string and
-//! pays for a payload that could contain it; the counted family reads a header
-//! and pays nothing for the payload at all.
+//! Five that frame, in two families, and `null`, which does not. The
+//! terminator family scans for a byte string and pays for a payload that could
+//! contain it; the counted family reads a header and pays nothing for the
+//! payload at all.
 //!
 //! | Mode | Framing | Overhead | Payload |
 //! | ---- | ------- | -------- | ------- |
@@ -29,6 +30,7 @@
 //! | `slip` | `0xc0`, payload escaped | 1 + 1 per `0xc0` or `0xdb` | any |
 //! | `length` | fixed-width big-endian prefix | 1, 2, 4 or 8 | any, up to what the width holds |
 //! | `netstring` | `LEN:payload,` | 3 or so | any |
+//! | `null` | none | none | any |
 //!
 //! `delimiter` is the one to reach for over text: cheap, greppable, and a
 //! stage like `base64` guarantees the payload cannot contain a newline.
@@ -50,6 +52,38 @@
 //! It has the same properties as `length` with a self-describing, greppable
 //! header, and the trailing comma catches a desynchronised stream on the very
 //! next message instead of never.
+//!
+//! `null` writes and reads nothing, and exists for what it *declares* rather
+//! than for what it does to the bytes. `Frame` reports [`Boundaries::Seal`] in
+//! every mode, and `Seal` is the only answer that settles a
+//! [`Needs::Downstream`] scan; `Unframe` reports [`Boundaries::Split`], the
+//! only answer that settles a [`Needs::Upstream`] one. Those requirements are
+//! build errors rather than warnings, so a stage that declares one cannot run
+//! without a `frame` or an `unframe` on the right side of it. `null` is how
+//! that requirement is met without putting a byte on the wire:
+//!
+//! ```console
+//! $ tocat file:/dev/urandom block,size=16 limit,chunks=4 \
+//!     encrypt,cipher=aes-128-gcm,mode=record,random-key,key-out=/dev/null \
+//!     hexify frame,mode=null -
+//! ```
+//!
+//! `encrypt` in record mode needs its units to reach the far end intact, and
+//! the far end here is a terminal. Nothing is going to parse this, so there is
+//! nothing for real framing to protect, and `mode=delimiter` would only put
+//! newlines between the hex. Anything that inspects a path rather than feeding
+//! a peer wants the same shape.
+//!
+//! What that costs is worth stating plainly, since nothing in the code will:
+//! the declaration is not backed by anything. A real peer downstream of
+//! `frame,mode=null` cannot recover message boundaries, and a stage below
+//! `unframe,mode=null` is handed whatever the last read returned rather than a
+//! message. Neither is detected, because bypassing the check that would detect
+//! it is the feature. Reach for it when the far side is a person, and for a
+//! mode that frames when the far side is a program.
+//!
+//! [`Needs::Downstream`]: tocat_api::Needs::Downstream
+//! [`Needs::Upstream`]: tocat_api::Needs::Upstream
 //!
 //! [consistent overhead byte stuffing]: https://doi.org/10.1109/90.769765
 //! [RFC 1055]: https://www.rfc-editor.org/rfc/rfc1055
@@ -87,6 +121,11 @@
 //! is a peer that asks the relay to buffer without limit. `max-message` caps
 //! it and defaults to 1 MiB. A stream that exceeds it is a protocol error, not
 //! a large message to be accommodated.
+//!
+//! `null` mode never holds a byte, so the bound it exists to enforce already
+//! holds and `max-message` is accepted and inert rather than refused. That is
+//! the one option `null` does not reject, and the difference is that the others
+//! would describe framing that is not happening.
 
 use serde::{Deserialize, Serialize};
 use tocat_api::{
@@ -143,6 +182,8 @@ pub enum FrameMode {
     Length,
     /// Wrap each message as `length:payload,` with a decimal length.
     Netstring,
+    /// Write no framing at all and forward the bytes unchanged.
+    Null,
 }
 
 impl FrameMode {
@@ -155,7 +196,7 @@ impl FrameMode {
             Self::Delimiter => configured.cloned().unwrap_or_default().0,
             Self::Cobs => vec![COBS_DELIMITER],
             Self::Slip => vec![SLIP_END],
-            Self::Length | Self::Netstring => Vec::new(),
+            Self::Length | Self::Netstring | Self::Null => Vec::new(),
         }
     }
 
@@ -167,6 +208,7 @@ impl FrameMode {
             Self::Slip => "slip",
             Self::Length => "length",
             Self::Netstring => "netstring",
+            Self::Null => "null",
         }
     }
 
@@ -178,8 +220,8 @@ impl FrameMode {
 
     /// Whether the payload reaches the wire as it was handed over.
     ///
-    /// The counted modes and `delimiter` forward the caller's bytes; `cobs`
-    /// and `slip` rewrite them, and so need a buffer of their own.
+    /// `cobs` and `slip` rewrite the caller's bytes and so need a buffer of
+    /// their own. Every other mode forwards them and only adds around them.
     fn escapes(self) -> bool {
         matches!(self, Self::Cobs | Self::Slip)
     }
@@ -252,6 +294,9 @@ impl AtEof {
     /// A text stream whose last line has no newline is routine, so
     /// `delimiter` mode emits it. Everywhere else a partial frame is a message
     /// that was cut off in transit rather than one the sender finished.
+    ///
+    /// `null` never holds a byte, so it never reaches this at all; it takes
+    /// `Error` with the rest and never has anything to apply it to.
     fn default_for(mode: FrameMode) -> Self {
         match mode {
             FrameMode::Delimiter => Self::Emit,
@@ -740,6 +785,9 @@ impl Plugin for Frame {
                 ctx.forward(input);
                 ctx.forward(b",");
             }
+            // No terminator, no header, no copy: the unit is forwarded as it
+            // arrived and the boundary it came with is the only one it has.
+            FrameMode::Null => ctx.forward(input),
         }
 
         Ok(())
@@ -753,6 +801,10 @@ impl Plugin for Frame {
     ///
     /// Framing a path that is already framed is redundant rather than wrong,
     /// and is what a datagram source feeding a stream sink wants.
+    ///
+    /// `null` answers `Seal` with the rest, and that is deliberate rather than
+    /// an oversight: settling that scan is the whole of what the mode does.
+    /// See the mode's entry in the module docs for what it costs.
     fn boundaries(&self) -> Boundaries {
         Boundaries::Seal
     }
@@ -984,6 +1036,14 @@ impl Plugin for Unframe {
     }
 
     fn on_bytes(&mut self, ctx: &mut Ctx<'_>, input: &[u8]) -> Result<()> {
+        // Nothing was written, so there is nothing to look for: the chunk goes
+        // straight on and `buf` stays empty for the life of the stage, which
+        // is what leaves `max-message` and `at-eof` with no work to do.
+        if self.mode == FrameMode::Null {
+            ctx.forward(input);
+            return Ok(());
+        }
+
         self.buf.extend_from_slice(input);
 
         loop {
@@ -1061,6 +1121,11 @@ impl Plugin for Unframe {
     /// from above do not survive it. Scanning the other way it is the answer:
     /// a stage below needing whole messages gets them from here whatever the
     /// endpoint above is, which is the point of putting it there.
+    ///
+    /// `null` answers `Split` with the rest, deliberately, for the reason
+    /// [`Frame::boundaries`] answers `Seal`: settling that scan is what the
+    /// mode is for. What a stage below actually receives in that case is a
+    /// chunk, not a message.
     fn boundaries(&self) -> Boundaries {
         Boundaries::Split
     }
@@ -1157,6 +1222,20 @@ impl PluginFactory for UnframeFactory {
             FrameMode::Length,
         )?;
 
+        // Nothing is held back in null mode, so the stream can never end part
+        // way through a message and every answer here would be inert. Refusing
+        // it keeps at-eof = "error" from reading as a guarantee it cannot make.
+        if config.at_eof.is_some() && mode == FrameMode::Null {
+            return Err(PluginError::config(
+                UNFRAME,
+                format!(
+                    "at-eof means nothing in {} mode, which holds no bytes back \
+                     and so has no partial message to leave over",
+                    mode.name()
+                ),
+            ));
+        }
+
         // The leftovers of a counted frame start with a header, so there is no
         // message in them to emit. The other modes leave a payload behind.
         if config.at_eof == Some(AtEof::Emit) && mode.counted() {
@@ -1194,7 +1273,9 @@ mod tests {
 
     use super::*;
 
-    /// Every mode, for the tests that should hold across all of them.
+    /// Every mode that frames, for the tests that should hold across all of
+    /// them. `null` writes nothing, so none of the round-trip properties below
+    /// apply to it and it is covered on its own further down.
     const MODES: [&str; 5] = ["delimiter", "cobs", "slip", "length", "netstring"];
 
     struct NoHost;
@@ -1777,5 +1858,89 @@ mod tests {
 
         assert!(framer(json!({})).boundaries().preserves_messages());
         assert!(!unframer(json!({})).boundaries().preserves_messages());
+    }
+
+    /// The bytes come out as they went in, in both directions, which is what
+    /// the mode does to the stream while it settles the scan.
+    #[test]
+    fn null_is_the_identity_on_the_stream() {
+        let messages: [&[u8]; 4] = [b"one", &[0, 1, 0xc0, 0xdb, 0], &[0xff; 600], b"last"];
+
+        for message in messages {
+            assert_eq!(
+                feed(framer(json!({"mode": "null"})).as_mut(), message),
+                [message.to_vec()],
+            );
+            assert_eq!(
+                feed(unframer(json!({"mode": "null"})).as_mut(), message),
+                [message.to_vec()],
+            );
+        }
+    }
+
+    /// A chunk is forwarded whole, so a stage below `unframe,mode=null` is
+    /// handed what the last read returned even though the stage declared it
+    /// would be handed a message. That is the cost of the mode.
+    #[test]
+    fn null_does_not_find_messages_in_a_chunk() {
+        let mut unframe = unframer(json!({"mode": "null"}));
+
+        assert_eq!(
+            feed(unframe.as_mut(), b"one\ntwo\n"),
+            [b"one\ntwo\n".to_vec()]
+        );
+    }
+
+    /// Nothing is held back, so there is no partial message at the end of the
+    /// stream and nothing to refuse, unlike every mode that frames.
+    #[test]
+    fn null_holds_nothing_at_the_end_of_the_stream() {
+        let mut unframe = unframer(json!({"mode": "null"}));
+
+        feed(unframe.as_mut(), &[3u8, 1, 2]);
+        assert!(finish(unframe.as_mut()).is_empty());
+    }
+
+    /// The mode exists to settle a boundary requirement without writing a
+    /// byte, so these are the assertions that say it still works. A refactor
+    /// that makes `null` report `Preserve` on the grounds that it writes no
+    /// framing is a refactor that removes the feature.
+    #[test]
+    fn null_settles_a_boundary_requirement_without_framing() {
+        let frame = framer(json!({"mode": "null"}));
+        let unframe = unframer(json!({"mode": "null"}));
+
+        assert_eq!(frame.boundaries(), Boundaries::Seal);
+        assert_eq!(unframe.boundaries(), Boundaries::Split);
+
+        assert!(frame.boundaries().satisfies_downstream());
+        assert!(unframe.boundaries().satisfies_upstream());
+
+        // And it writes nothing, which is the other half of the bargain.
+        assert_eq!(wire(json!({"mode": "null"}), &[b"one", b"two"]), b"onetwo");
+    }
+
+    /// Every option describes framing, and `null` does none, so the only one
+    /// left standing is `max-message`: the bound it enforces already holds,
+    /// because nothing is ever held.
+    #[test]
+    fn null_takes_no_options_but_the_one_it_cannot_break() {
+        for factory in [&FrameFactory as &dyn PluginFactory, &UnframeFactory] {
+            assert!(build(factory, json!({"mode": "null", "delimiter": "\\n"})).is_err());
+            assert!(build(factory, json!({"mode": "null", "length-bytes": 4})).is_err());
+            assert!(build(factory, json!({"mode": "null", "endian": "big"})).is_err());
+            assert!(build(factory, json!({"mode": "null"})).is_ok());
+        }
+
+        assert!(build(&FrameFactory, json!({"mode": "null", "check": false})).is_err());
+
+        for at_eof in ["emit", "error", "drop"] {
+            assert!(
+                build(&UnframeFactory, json!({"mode": "null", "at-eof": at_eof})).is_err(),
+                "accepted at-eof {at_eof}",
+            );
+        }
+
+        assert!(build(&UnframeFactory, json!({"mode": "null", "max-message": 8})).is_ok());
     }
 }

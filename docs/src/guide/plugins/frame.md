@@ -25,15 +25,15 @@ stage that declared boundaries of its own such as [`block`](block.md), and
 pointless anywhere else, where a chunk is whatever the last read happened to
 return.
 
-| Option            | Plugin    | Description                                                                                                |
-| ----------------- | --------- | ---------------------------------------------------------------------------------------------------------- |
-| `mode=NAME`       | both      | `delimiter`, `cobs`, `slip`, `length` or `netstring`. Default is `delimiter`. Must match at both ends      |
-| `delimiter=BYTES` | both      | Terminator in `delimiter` mode, with `\n`, `\r`, `\t`, `\0`, `\\` and `\xNN` escapes. Default is a newline |
-| `length-bytes=N`  | both      | Header width in `length` mode: 1, 2, 4 or 8. Default is 4                                                  |
-| `endian=NAME`     | both      | Header byte order in `length` mode: `big` or `little`. Default is `big`                                    |
-| `check`           | `frame`   | Reject a message that would frame as two, in `delimiter` mode. On by default                               |
-| `max-message=N`   | `unframe` | Largest message to accept. Default is 1MiB; `0` removes the limit                                          |
-| `at-eof=NAME`     | `unframe` | `emit`, `error` or `drop` for a trailing partial message. Default depends on the mode                      |
+| Option            | Plugin    | Description                                                                                                   |
+| ----------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
+| `mode=NAME`       | both      | `delimiter`, `cobs`, `slip`, `length`, `netstring` or `null`. Default is `delimiter`. Must match at both ends |
+| `delimiter=BYTES` | both      | Terminator in `delimiter` mode, with `\n`, `\r`, `\t`, `\0`, `\\` and `\xNN` escapes. Default is a newline    |
+| `length-bytes=N`  | both      | Header width in `length` mode: 1, 2, 4 or 8. Default is 4                                                     |
+| `endian=NAME`     | both      | Header byte order in `length` mode: `big` or `little`. Default is `big`                                       |
+| `check`           | `frame`   | Reject a message that would frame as two, in `delimiter` mode. On by default                                  |
+| `max-message=N`   | `unframe` | Largest message to accept. Default is 1MiB; `0` removes the limit                                             |
+| `at-eof=NAME`     | `unframe` | `emit`, `error` or `drop` for a trailing partial message. Default depends on the mode                         |
 
 An option a mode ignores is an error rather than a no-op, so
 `mode=cobs,delimiter=\n` is refused instead of quietly going on using a zero
@@ -45,9 +45,9 @@ there, and there is nothing for it to do on a path that already has messages.
 
 ## Modes
 
-Five, in two families. The terminator family scans for a byte string and pays
-for a payload that could contain it. The counted family reads a header and pays
-nothing for the payload at all.
+Five that frame, in two families, and `null`, which does not. The terminator
+family scans for a byte string and pays for a payload that could contain it. The
+counted family reads a header and pays nothing for the payload at all.
 
 | Mode        | Framing                           | Overhead per message     | Payload                         |
 | ----------- | --------------------------------- | ------------------------ | ------------------------------- |
@@ -56,6 +56,7 @@ nothing for the payload at all.
 | `slip`      | `0xc0`, payload escaped           | 1 byte + 1 per `c0`/`db` | any                             |
 | `length`    | fixed-width prefix                | 1, 2, 4 or 8 bytes       | any, up to what the width holds |
 | `netstring` | `LEN:payload,`                    | 3 bytes or so            | any                             |
+| `null`      | none                              | none                     | any                             |
 
 ### `delimiter`
 
@@ -116,6 +117,45 @@ Neither counted mode can resynchronise. A receiver that joins mid-stream, or a
 sender that gets one length wrong, is lost until the connection is remade, where
 the terminator modes recover at the next terminator.
 
+### `null`
+
+No framing at all. `frame` forwards the message as it stands and `unframe`
+forwards each chunk as it arrives, so the bytes come out exactly as they went
+in.
+
+It is there for what it declares, not for what it does. A stage that needs
+message boundaries to survive below it, or to arrive from above, will not build
+without a `frame` or an `unframe` on that side: the requirement is an error
+rather than a warning, as described in
+[When a stage needs boundaries](../plugins.md#when-a-stage-needs-boundaries).
+`mode=null` settles that requirement without putting a byte on the wire, which
+is what you want when the far end is your terminal:
+
+```console
+$ tocat file:/dev/urandom block,size=16 limit,chunks=4 \
+    encrypt,cipher=aes-128-gcm,mode=record,random-key,key-out=/dev/null \
+    hexify frame,mode=null -
+```
+
+`encrypt` in record mode needs its messages to reach the far end intact, and
+here the far end is you, reading hex. Nothing downstream is going to parse it,
+so there is nothing for framing to protect, and `mode=delimiter` would only
+scatter newlines through the output. Inspecting a path rather than feeding a
+peer wants this shape whatever the stages in the middle are.
+
+The cost is that the declaration is not backed by anything, and tocat will not
+tell you so, because skipping that check is the point. A real peer below
+`frame,mode=null` cannot tell one message from the next, and a stage below
+`unframe,mode=null` is handed whatever the last read returned rather than a
+message. Use it when the far side is a person; use a mode that frames when the
+far side is a program.
+
+`null` takes no options except `max-message`. Pairing it with `delimiter`,
+`length-bytes`, `endian`, `check` or `at-eof` is refused, since each of those
+describes framing that is not happening. `max-message` is accepted and does
+nothing: it bounds the bytes `unframe` holds while it waits for the rest of a
+message, and this mode never holds any.
+
 ## The delimiter has to be absent from the payload
 
 Framing a message that contains the delimiter puts two messages on the wire, and
@@ -157,6 +197,9 @@ approaches it however long it runs. Framing bytes do not count against it, so a
 message of exactly `max-message` still passes. `max-message=0` removes the cap,
 which is worth doing only for a peer you control.
 
+`null` mode holds nothing back at all, so the cap has nothing to bound. It is
+accepted there and does nothing.
+
 ## What framing survives, and what it does not
 
 Framing puts the boundary into the payload, so it outlives a stage below that
@@ -168,6 +211,10 @@ tocat file:in.bin 'frame,mode=cobs' 'compress' tcp:collector:9000
 
 meaningful where the same two stages without `frame` would leave the far end
 unable to tell one message from the next.
+
+None of this section applies to `mode=null`. It reports that the boundary
+survives, which is what lets a pipeline build, and writes nothing into the
+payload to make that so.
 
 What survives is the *bytes*, though, not the framing as such, and that puts two
 conditions on the stage below.
@@ -212,13 +259,16 @@ The default depends on the mode, because the same bytes mean different things. A
 text stream whose last line has no newline is routine, so `delimiter` mode
 emits. Everywhere else a partial frame was cut off in transit, so the default is
 `error`. The counted modes refuse `at-eof=emit` outright: what they hold is a
-header and part of a payload, and there is no message in it to emit.
+header and part of a payload, and there is no message in it to emit. `null` mode
+refuses the option in every form, holding nothing back and so never having a
+partial message to decide about.
 
 ## Empty messages
 
 A zero-length message describes nothing a pipeline can carry: an empty unit is
 not emitted, and a datagram sink drops an empty message rather than putting a
-spurious zero-length datagram on the wire. Every mode can express one on the
-wire, and none of them will deliver one. In `delimiter` mode a blank line is
-therefore swallowed. In `cobs` mode two terminators in a row cannot come from a
-conforming sender at all, so they are reported as a corrupt frame.
+spurious zero-length datagram on the wire. Every mode that frames can express
+one on the wire, and none of them will deliver one. In `delimiter` mode a blank
+line is therefore swallowed. In `cobs` mode two terminators in a row cannot come
+from a conforming sender at all, so they are reported as a corrupt frame. In
+`null` mode an empty message writes no bytes, so it leaves no trace to express.
