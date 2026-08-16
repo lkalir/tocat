@@ -18,7 +18,8 @@
     "unorderedListKind": "dashes"
   },
   "excludes": [
-    "**/*-lock.json"
+    "**/*-lock.json",
+    "**/CHANGELOG.md"
   ],
   "plugins": [
     "https://plugins.dprint.dev/markdown-0.22.1.wasm",
