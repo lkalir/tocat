@@ -51,6 +51,7 @@ all-plugins = [
   "base64",
   "block",
   "compress",
+  "encrypt",
   "frame",
   "hash",
   "hexify",
@@ -66,6 +67,7 @@ all-plugins-no-wasm = [
   "base64",
   "block",
   "compress",
+  "encrypt",
   "frame",
   "hash",
   "hexify",
@@ -79,6 +81,7 @@ all-plugins-no-wasm = [
 base64 = ["tocat-plugins/base64"]
 block = ["tocat-plugins/block"]
 compress = ["tocat-plugins/compress"]
+encrypt = ["tocat-plugins/encrypt"]
 frame = ["tocat-plugins/frame"]
 hash = ["tocat-plugins/hash"]
 hexify = ["tocat-plugins/hexify"]

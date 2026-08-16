@@ -84,6 +84,12 @@
           "$ref": "#/$defs/plugin-unframe"
         },
         {
+          "$ref": "#/$defs/plugin-encrypt"
+        },
+        {
+          "$ref": "#/$defs/plugin-decrypt"
+        },
+        {
           "$ref": "#/$defs/plugin-process"
         },
         {
@@ -1389,6 +1395,226 @@
         }
       }
     },
+    "plugin-encrypt": {
+      "title": "encrypt",
+      "description": "Encrypt this path with a symmetric cipher. Encryption is asymmetric, so this is paired with a decrypt entry on the other direction rather than run with direction 'both', which would hand the peer ciphertext it would try to decrypt in turn. Every option but random-key and key-out has to match the decrypt end: nothing is negotiated and nothing is described on the wire.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "cipher"
+      ],
+      "properties": {
+        "name": {
+          "const": "encrypt",
+          "description": "Selects the encrypt plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs and in the bracket at the end of a generated key line. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. This stage detaches by default, since it does enough work per byte to be worth its own task; false runs it inline instead."
+        },
+        "cipher": {
+          "description": "Which cipher. Required, and it must match the far end. Spelling is forgiving, so aes-256-gcm, AES256GCM and aes_256_gcm are the same cipher. The gcm, gcm-siv, poly1305 and ascon ciphers are authenticated: they tag every record and decrypt refuses one whose tag does not check out. The ctr, ofb, cbc and ecb modes are not, and do nothing about tampering. Aliases: algo, alg.",
+          "enum": [
+            "aes-128-ecb",
+            "aes-192-ecb",
+            "aes-256-ecb",
+            "aes-128-cbc",
+            "aes-192-cbc",
+            "aes-256-cbc",
+            "aes-128-ctr",
+            "aes-192-ctr",
+            "aes-256-ctr",
+            "aes-128-ofb",
+            "aes-192-ofb",
+            "aes-256-ofb",
+            "aes-128-gcm",
+            "aes-192-gcm",
+            "aes-256-gcm",
+            "aes-128-gcm-siv",
+            "aes-256-gcm-siv",
+            "ascon-128",
+            "chacha20-poly1305",
+            "xchacha20-poly1305"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "The key, written in key-format. Exactly one of key, key-file, key-env and random-key is required, and a key of the wrong length for the cipher is rejected at startup rather than truncated or padded. This one is visible in ps output and in shell history, so prefer key-file or key-env anywhere that matters."
+        },
+        "key-file": {
+          "type": "string",
+          "description": "File holding the key, read once at startup."
+        },
+        "key-env": {
+          "type": "string",
+          "description": "Environment variable holding the key, read once at startup."
+        },
+        "key-format": {
+          "description": "How the key is written, wherever it comes from. Hex and base64 ignore whitespace, so a file with a trailing newline reads as intended; 'raw' takes a file's bytes exactly, which is what `head -c 32 /dev/urandom` produces. The bytes are what matter, so the same key in two encodings is the same key.",
+          "default": "hex",
+          "enum": [
+            "hex",
+            "base64",
+            "raw"
+          ]
+        },
+        "random-key": {
+          "type": "boolean",
+          "default": false,
+          "description": "Generate a key here and report it. Nothing else can hold that key, so the far end of a link cannot be configured to match it; this is for encrypting something you will decrypt yourself later, with the key the stage wrote down. The line is written once, when the path first carries bytes."
+        },
+        "key-out": {
+          "type": "string",
+          "description": "Where a generated key is written. Omitted, '-', 'stderr', '/dev/stderr' or '/dev/fd/2' all mean stderr. stdout is refused: on a stdio endpoint it carries relay payload. Rejected without random-key, since there is nothing else to report."
+        },
+        "mode": {
+          "description": "Whether each call is its own record or the path is one session. In 'record' mode each chunk becomes nonce, ciphertext and tag, self-contained and readable on its own, which is what a datagram path needs; the records must arrive whole, so on a byte stream this needs frame and unframe. In 'stream' mode the nonce goes out once ahead of the first byte and the cipher's state continues across every chunk after it, which needs no framing but never recovers from a lost byte. Defaults to 'record' for the authenticated ciphers, which have no other mode, and 'stream' for the rest. Must match the far end.",
+          "enum": [
+            "record",
+            "stream"
+          ]
+        },
+        "padding": {
+          "description": "How a partial block is filled out. Only the ecb and cbc modes have blocks; setting this for anything else is rejected at startup. 'pkcs7' always adds between one byte and one block, so a message that already ends on a boundary still grows. 'none' requires every message to be a whole number of blocks already and fails the path otherwise, for talking to a peer that expects raw blocks. Must match the far end.",
+          "default": "pkcs7",
+          "enum": [
+            "pkcs7",
+            "none"
+          ]
+        },
+        "rotate-after": {
+          "description": "End a session and start another every this many bytes, with a fresh nonce on the wire between them. A plain byte count or a binary suffix ('64k', '1GiB'). A 'stream' mode option, and only for a cipher that has a nonce to replace: the ctr and ofb modes, where it bounds the keystream drawn under one nonce, and cbc, where it bounds the chain. ecb has no nonce, and in 'record' mode every record already draws its own. The count is of ciphertext rather than payload, which for cbc differs by the padding block that ends each session, so a block mode's budget must be a whole number of blocks and at least two of them when pkcs7 is padding. Both ends must be given the same value. Rotation replaces the nonce, not the key, so it does not extend how much data one key may safely carry.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        }
+      }
+    },
+    "plugin-decrypt": {
+      "title": "decrypt",
+      "description": "Decrypt this path with a symmetric cipher, the other half of an encrypt entry. Cipher, key, mode, padding and rotate-after must all match the sender: nothing is negotiated and nothing is described on the wire, so a mismatch is a stream neither end can read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "cipher"
+      ],
+      "properties": {
+        "name": {
+          "const": "decrypt",
+          "description": "Selects the decrypt plugin."
+        },
+        "direction": {
+          "$ref": "#/$defs/plugin-direction"
+        },
+        "as": {
+          "type": "string",
+          "description": "Name for this instance, used in logs. Without it a stage is named after its plugin, with #1, #2 appended when the same plugin appears twice on one path."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "Override the plugin's default placement. This stage detaches by default, since it does enough work per byte to be worth its own task; false runs it inline instead."
+        },
+        "cipher": {
+          "description": "Which cipher. Required, and it must match the far end. Spelling is forgiving, so aes-256-gcm, AES256GCM and aes_256_gcm are the same cipher. The gcm, gcm-siv, poly1305 and ascon ciphers are authenticated: they tag every record and decrypt refuses one whose tag does not check out. The ctr, ofb, cbc and ecb modes are not, and do nothing about tampering. Aliases: algo, alg.",
+          "enum": [
+            "aes-128-ecb",
+            "aes-192-ecb",
+            "aes-256-ecb",
+            "aes-128-cbc",
+            "aes-192-cbc",
+            "aes-256-cbc",
+            "aes-128-ctr",
+            "aes-192-ctr",
+            "aes-256-ctr",
+            "aes-128-ofb",
+            "aes-192-ofb",
+            "aes-256-ofb",
+            "aes-128-gcm",
+            "aes-192-gcm",
+            "aes-256-gcm",
+            "aes-128-gcm-siv",
+            "aes-256-gcm-siv",
+            "ascon-128",
+            "chacha20-poly1305",
+            "xchacha20-poly1305"
+          ]
+        },
+        "key": {
+          "type": "string",
+          "description": "The key, written in key-format. Exactly one of key, key-file, key-env and random-key is required, and a key of the wrong length for the cipher is rejected at startup rather than truncated or padded. This one is visible in ps output and in shell history, so prefer key-file or key-env anywhere that matters."
+        },
+        "key-file": {
+          "type": "string",
+          "description": "File holding the key, read once at startup."
+        },
+        "key-env": {
+          "type": "string",
+          "description": "Environment variable holding the key, read once at startup."
+        },
+        "key-format": {
+          "description": "How the key is written, wherever it comes from. Hex and base64 ignore whitespace, so a file with a trailing newline reads as intended; 'raw' takes a file's bytes exactly, which is what `head -c 32 /dev/urandom` produces. The bytes are what matter, so the same key in two encodings is the same key.",
+          "default": "hex",
+          "enum": [
+            "hex",
+            "base64",
+            "raw"
+          ]
+        },
+        "mode": {
+          "description": "Whether each call is its own record or the path is one session. In 'record' mode each chunk becomes nonce, ciphertext and tag, self-contained and readable on its own, which is what a datagram path needs; the records must arrive whole, so on a byte stream this needs frame and unframe. In 'stream' mode the nonce goes out once ahead of the first byte and the cipher's state continues across every chunk after it, which needs no framing but never recovers from a lost byte. Defaults to 'record' for the authenticated ciphers, which have no other mode, and 'stream' for the rest. Must match the far end.",
+          "enum": [
+            "record",
+            "stream"
+          ]
+        },
+        "padding": {
+          "description": "How a partial block is filled out. Only the ecb and cbc modes have blocks; setting this for anything else is rejected at startup. 'pkcs7' always adds between one byte and one block, so a message that already ends on a boundary still grows. 'none' requires every message to be a whole number of blocks already and fails the path otherwise, for talking to a peer that expects raw blocks. Must match the far end.",
+          "default": "pkcs7",
+          "enum": [
+            "pkcs7",
+            "none"
+          ]
+        },
+        "rotate-after": {
+          "description": "End a session and start another every this many bytes, with a fresh nonce on the wire between them. A plain byte count or a binary suffix ('64k', '1GiB'). A 'stream' mode option, and only for a cipher that has a nonce to replace: the ctr and ofb modes, where it bounds the keystream drawn under one nonce, and cbc, where it bounds the chain. ecb has no nonce, and in 'record' mode every record already draws its own. The count is of ciphertext rather than payload, which for cbc differs by the padding block that ends each session, so a block mode's budget must be a whole number of blocks and at least two of them when pkcs7 is padding. Both ends must be given the same value. Rotation replaces the nonce, not the key, so it does not extend how much data one key may safely carry.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            }
+          ]
+        },
+        "on-fail": {
+          "description": "What to do with a record that will not open: one whose tag fails, or whose padding is malformed, or that arrived too short to hold its own header. Nothing from a rejected record is ever forwarded. 'error' fails the path and is the default, since a rejected record is either a misconfiguration or someone changing bytes in transit. 'drop' discards it, logs a warning and tries the next, which is what a datagram path usually wants. 'halt' stops reading upstream, as if the peer had closed. A 'record' mode option: dropping part of a session desynchronises everything after it, so a session that cannot be decoded ends the path.",
+          "default": "error",
+          "enum": [
+            "error",
+            "drop",
+            "halt"
+          ]
+        }
+      }
+    },
     "plugin-process": {
       "title": "process",
       "type": "object",
@@ -1560,6 +1786,8 @@
               "unbase64",
               "frame",
               "unframe",
+              "encrypt",
+              "decrypt",
               "process",
               "rate",
               "limit",

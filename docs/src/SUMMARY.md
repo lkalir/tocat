@@ -22,6 +22,7 @@
   - [base64 and unbase64](guide/plugins/base64.md)
   - [block](guide/plugins/block.md)
   - [compress and decompress](guide/plugins/compress.md)
+  - [encrypt and decrypt](guide/plugins/encrypt.md)
   - [frame and unframe](guide/plugins/frame.md)
   - [hash](guide/plugins/hash.md)
   - [hexify](guide/plugins/hexify.md)

@@ -22,6 +22,9 @@ mod block;
 #[cfg(feature = "compress")]
 mod compress;
 
+#[cfg(feature = "encrypt")]
+mod encrypt;
+
 #[cfg(feature = "frame")]
 mod frame;
 
@@ -80,6 +83,12 @@ pub fn register_native(registry: &mut Registry) {
     {
         registry.register(compress::CompressFactory);
         registry.register(compress::DecompressFactory);
+    }
+
+    #[cfg(feature = "encrypt")]
+    {
+        registry.register(encrypt::EncryptFactory);
+        registry.register(encrypt::DecryptFactory);
     }
 
     #[cfg(feature = "frame")]

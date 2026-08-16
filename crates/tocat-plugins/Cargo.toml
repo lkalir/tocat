@@ -11,12 +11,24 @@ keywords = ["plugin", "proxy", "relay", "tocat", "wasm"]
 categories = ["network-programming"]
 
 [dependencies]
+aead = { version = "0.6.1", features = ["alloc"], optional = true }
+aes = { version = "0.9.2", optional = true }
+aes-gcm = { version = "0.11.0", optional = true }
+aes-gcm-siv = { version = "0.12.0", optional = true }
+ascon-aead = { version = "0.6.0", optional = true }
 base64 = { version = "0.23.1", optional = true }
 blake2 = { version = "0.11.0-rc.6", optional = true }
 blake3 = { version = "1.8.6", optional = true }
+cbc = { version = "0.2.1", optional = true }
+chacha20poly1305 = { version = "0.11.0", optional = true }
+cipher = { version = "0.5.2", features = ["block-padding"], optional = true }
+ctr = { version = "0.10.1", optional = true }
 digest = { version = "0.11.3", optional = true }
+ecb = { version = "0.2.0", optional = true }
+getrandom = { version = "0.4.3", optional = true }
 hex = { version = "0.4.3", optional = true }
 md-5 = { version = "0.11.0", optional = true }
+ofb = { version = "0.7.1", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 sha1 = { version = "0.11.0", optional = true }
@@ -32,6 +44,7 @@ default = [
   "base64",
   "block",
   "compress",
+  "encrypt",
   "frame",
   "hash",
   "hexify",
@@ -46,6 +59,22 @@ default = [
 base64 = ["dep:base64"]
 block = []
 compress = ["dep:zstd"]
+encrypt = [
+  "dep:aead",
+  "dep:aes",
+  "dep:aes-gcm",
+  "dep:aes-gcm-siv",
+  "dep:ascon-aead",
+  "dep:base64",
+  "dep:cbc",
+  "dep:chacha20poly1305",
+  "dep:cipher",
+  "dep:ctr",
+  "dep:ecb",
+  "dep:getrandom",
+  "dep:hex",
+  "dep:ofb",
+]
 frame = []
 hash = [
   "dep:blake2",

@@ -38,6 +38,7 @@ ignore the ones in a config file.
 | [`frame`](plugins/frame.md)       | Mark or find message boundaries           | reframed  | inline      | `frame` safe, `unframe` warns     |
 | [`base64`](plugins/base64.md)     | Base64-encode or decode this path         | rewritten | inline      | safe                              |
 | [`compress`](plugins/compress.md) | zstd compress or decompress               | rewritten | detached    | warns                             |
+| [`encrypt`](plugins/encrypt.md)   | Encrypt or decrypt this path              | rewritten | detached    | safe in `record` mode, else warns |
 | [`process`](plugins/process.md)   | Pipe the path through a child process     | rewritten | own process | warns                             |
 | [`timeout`](plugins/timeout.md)   | End the path once it has gone quiet       | untouched | inline      | safe                              |
 | [`wasm`](plugins/wasm.md)         | Run a WebAssembly guest as a stage        | guest's   | detached    | the guest declares, default warns |
@@ -48,8 +49,8 @@ a stage that says nothing, including any plugin from outside the binary, is that
 it is not safe.
 
 A few stages go further and *need* message boundaries rather than merely
-preserving them. Those are checked too, and an unmet requirement is an error
-rather than a warning: see
+preserving them. `encrypt` and `decrypt` in `record` mode are the two that ship,
+and an unmet requirement is an error rather than a warning: see
 [When a stage needs boundaries](#when-a-stage-needs-boundaries) below.
 
 ## Writing an entry
@@ -168,13 +169,14 @@ bytes cross the pipe.
 
 ### When a stage needs boundaries
 
-None of the stages above do, but a plugin from outside the binary can say that
-it does, and a [WebAssembly guest](plugins/wasm.md) declares it through
-`TOCAT_NEEDS_UPSTREAM` and `TOCAT_NEEDS_DOWNSTREAM`. A stage that reads whole
-messages needs one message per call; a stage that writes whole messages needs
-the ones it emits to arrive intact. Neither is a matter of taste, so an unmet
-requirement stops the relay before it starts rather than warning, and names both
-the stage and what took the boundaries away:
+[`encrypt` and `decrypt`](plugins/encrypt.md) do in `record` mode, a plugin from
+outside the binary can say that it does, and a
+[WebAssembly guest](plugins/wasm.md) declares it through `TOCAT_NEEDS_UPSTREAM`
+and `TOCAT_NEEDS_DOWNSTREAM`. A stage that reads whole messages needs one
+message per call; a stage that writes whole messages needs the ones it emits to
+arrive intact. Neither is a matter of taste, so an unmet requirement stops the
+relay before it starts rather than warning, and names both the stage and what
+took the boundaries away:
 
 ```
 wasm on source-to-sink needs message boundaries arriving, and the source tcp://host:9000 is a byte

@@ -48,7 +48,7 @@ The plugins that ship with tocat are
 - [x] base64/unbase64 - encoding using base64
 - [x] block - accumulate and emit data in fixed sizes
 - [x] compress / decompress - zstd
-- [ ] encrypt / decrypt - symmetric stream encryption/decryption
+- [x] encrypt / decrypt - symmetric encryption, per record or per stream
 - [x] frame / unframe - apply or strip framing to and from streams
 - [x] hash - digest stream contents
 - [x] hexify / unhexify - encoding as hexadecimal strings
