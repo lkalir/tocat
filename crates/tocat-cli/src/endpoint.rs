@@ -47,6 +47,7 @@
 //! now the `tee` plugin, which can sit anywhere in the pipeline rather than
 //! only at the ends.
 
+mod chan;
 mod datagram;
 mod exec;
 mod file;
@@ -66,6 +67,7 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Serialize};
 
 pub use self::{
+    chan::{Chan, Channel, Message, register, unregister},
     datagram::Demux,
     exec::{Exec, System},
     file::File,
@@ -74,8 +76,8 @@ pub use self::{
     pty::{Pty, PtyExec},
     stdio::Stdio,
     stream::{
-        BoxRead, BoxWrite, Connection, DatagramSocket, EndpointStream, ReadHalf, SyncHalves,
-        SyncRead, SyncWrite, WriteHalf,
+        BoxRead, BoxWrite, Connection, DatagramSocket, EndpointStream, MessageSocket, ReadHalf,
+        SyncHalves, SyncRead, SyncWrite, WriteHalf,
     },
     sys::{PathGuard, size_if_pipe},
     tcp::{Tcp, TcpListen},
@@ -236,6 +238,8 @@ pub enum EndpointSpec {
     Udp(Udp),
     #[serde(alias = "UDP-LISTEN", alias = "udplisten", alias = "UDPLISTEN")]
     UdpListen(UdpListen),
+    #[serde(alias = "CHAN", alias = "channel", alias = "CHANNEL")]
+    Chan(Chan),
 }
 
 impl EndpointSpec {
@@ -247,6 +251,7 @@ impl EndpointSpec {
                 | Self::UnixSeqpacketListen(_)
                 | Self::UnixDgramListen(_)
                 | Self::UdpListen(_)
+                | Self::Chan(_)
         )
     }
 
@@ -298,6 +303,7 @@ impl EndpointSpec {
             Self::Tty(e) => e.label(),
             Self::Udp(e) => e.label(),
             Self::UdpListen(e) => e.label(),
+            Self::Chan(e) => e.label(),
         }
     }
 
@@ -375,6 +381,7 @@ impl EndpointSpec {
             Self::Tty(e) => e.connect().await,
             Self::Udp(e) => e.connect().await,
             Self::UdpListen(e) => e.connect().await,
+            Self::Chan(e) => e.connect().await,
         }
     }
 }

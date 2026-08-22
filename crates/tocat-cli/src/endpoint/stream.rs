@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpStream, UnixStream},
@@ -89,6 +90,29 @@ pub enum EndpointStream {
     Datagram(DatagramSocket),
 }
 
+/// A message endpoint that is not one of the sockets below.
+///
+/// The variants of [`DatagramSocket`] are the kernel objects this module knows
+/// how to open. Everything else that carries messages arrives here: a queue an
+/// embedder drives, and, once a layer can reshape a stream, a framing that
+/// turns a byte transport into a message one. Boxing costs a virtual call per
+/// message, which is the same order as the syscall it replaces.
+///
+/// Boxed futures rather than `async fn`, because this is used as `dyn`: an
+/// `async fn` in a trait is not dyn compatible, and the alternative is a
+/// procedural macro dependency for four methods.
+pub trait MessageSocket: Send + Sync {
+    /// One message, or `None` once the source has ended. As
+    /// [`DatagramSocket::recv`], including the truncation rule.
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, std::io::Result<Option<usize>>>;
+
+    fn send<'a>(&'a self, buf: &'a [u8]) -> BoxFuture<'a, std::io::Result<usize>>;
+
+    /// End of stream on the writing side, for an implementation that has one
+    /// to send. The default is the connectionless behaviour: nothing to close.
+    fn finish(&self) {}
+}
+
 /// A message endpoint, either a socket of its own or one peer's share of a
 /// shared one.
 #[derive(Clone)]
@@ -102,6 +126,8 @@ pub enum DatagramSocket {
     Seqpacket(Arc<SeqpacketConn>),
     /// One sender's session on a forked datagram listener. See [`Session`].
     Session(Arc<Session>),
+    /// Anything else that carries messages. See [`MessageSocket`].
+    Boxed(Arc<dyn MessageSocket>),
 }
 
 impl DatagramSocket {
@@ -117,6 +143,7 @@ impl DatagramSocket {
             DatagramSocket::UnixDgram(socket) => socket.recv(buf).await.map(Some),
             DatagramSocket::Seqpacket(socket) => socket.recv(buf).await,
             DatagramSocket::Session(session) => session.recv(buf).await,
+            DatagramSocket::Boxed(socket) => socket.recv(buf).await,
         }
     }
 
@@ -126,6 +153,7 @@ impl DatagramSocket {
             DatagramSocket::UnixDgram(socket) => socket.send(buf).await,
             DatagramSocket::Seqpacket(socket) => socket.send(buf).await,
             DatagramSocket::Session(session) => session.send(buf).await,
+            DatagramSocket::Boxed(socket) => socket.send(buf).await,
         }
     }
 
@@ -137,8 +165,10 @@ impl DatagramSocket {
     /// have nothing to close, which is the same reason they never see an end
     /// of stream either.
     pub fn finish(&self) {
-        if let DatagramSocket::Seqpacket(socket) = self {
-            socket.finish();
+        match self {
+            DatagramSocket::Seqpacket(socket) => socket.finish(),
+            DatagramSocket::Boxed(socket) => socket.finish(),
+            DatagramSocket::Udp(_) | DatagramSocket::UnixDgram(_) | DatagramSocket::Session(_) => {}
         }
     }
 }
@@ -217,6 +247,11 @@ impl EndpointStream {
 
     pub fn datagram_session(session: Session) -> Self {
         Self::Datagram(DatagramSocket::Session(Arc::new(session)))
+    }
+
+    /// A message endpoint implemented outside this module.
+    pub fn message(socket: impl MessageSocket + 'static) -> Self {
+        Self::Datagram(DatagramSocket::Boxed(Arc::new(socket)))
     }
 
     /// The two halves, either of which may be absent.

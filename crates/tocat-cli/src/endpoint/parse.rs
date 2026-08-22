@@ -20,6 +20,7 @@ use crate::{
     config::ByteSize,
     endpoint::{
         EndpointSpec,
+        chan::Chan,
         exec::{Exec, System},
         file::File,
         pipe::Pipe,
@@ -194,6 +195,7 @@ impl std::str::FromStr for EndpointSpec {
         let (scheme, body) = target.split_once(':').unwrap_or((target, ""));
 
         match normalize(scheme).as_str() {
+            "chan" | "channel" | "queue" => Chan::parse(body, opts).map(Self::Chan),
             "exec" => Exec::parse(body, opts).map(Self::Exec),
             "file" | "open" => File::parse(body, opts).map(Self::File),
             "pipe" | "fifo" => Pipe::parse(body, opts).map(Self::Pipe),
