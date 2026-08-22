@@ -13,3 +13,4 @@ tocat.toml
 **/*.wasm
 build/
 .cache/
+.schema/

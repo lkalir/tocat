@@ -129,13 +129,14 @@ configuration a run will use.
 
 ## Crates
 
-| Crate                                     | Is                                                               |
-| ----------------------------------------- | ---------------------------------------------------------------- |
-| [`tocat`](crates/tocat-cli)               | The relay itself, and the only one most people want              |
-| [`tocat-api`](crates/tocat-api)           | The plugin contract, for writing a native plugin                 |
-| [`tocat-plugins`](crates/tocat-plugins)   | The plugins compiled into the binary, one module each            |
-| [`tocat-wasm-abi`](crates/tocat-wasm-abi) | The WebAssembly guest wire format, and the C header it generates |
-| [`tocat-wasm-sdk`](crates/tocat-wasm-sdk) | Writing a WebAssembly guest in Rust                              |
+| Crate                                         | Is                                                               |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| [`tocat`](crates/tocat-cli)                   | The relay itself, and the only one most people want              |
+| [`tocat-api`](crates/tocat-api)               | The plugin contract, for writing a native plugin                 |
+| [`tocat-plugins`](crates/tocat-plugins)       | The plugins compiled into the binary, one module each            |
+| [`tocat-wasm-abi`](crates/tocat-wasm-abi)     | The WebAssembly guest wire format, and the C header it generates |
+| [`tocat-wasm-sdk`](crates/tocat-wasm-sdk)     | Writing a WebAssembly guest in Rust                              |
+| [`tocat-wasm-shell`](crates/tocat-wasm-shell) | A REPL for driving a WebAssembly guest without a relay           |
 
 `sdk/wasm` is the same guest SDK for C and C++, as a CMake package, and
 `examples/wasm` is a separate workspace of guests built for
