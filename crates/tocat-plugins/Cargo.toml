@@ -15,25 +15,39 @@ aead = { version = "0.6.1", features = ["alloc"], optional = true }
 aes = { version = "0.9.2", optional = true }
 aes-gcm = { version = "0.11.0", optional = true }
 aes-gcm-siv = { version = "0.12.0", optional = true }
+aes-siv = { version = "0.8.0", optional = true }
+aria = { version = "0.2.0", optional = true }
 ascon-aead = { version = "0.6.0", optional = true }
 base64 = { version = "0.23.1", optional = true }
 blake2 = { version = "0.11.0-rc.6", optional = true }
 blake3 = { version = "1.8.6", optional = true }
+camellia = { version = "0.2.1", optional = true }
 cbc = { version = "0.2.1", optional = true }
+ccm = { version = "0.6.0", optional = true }
+cfb-mode = { version = "0.9.1", optional = true }
+chacha20 = { version = "0.10.1", features = ["xchacha"], optional = true }
 chacha20poly1305 = { version = "0.11.0", optional = true }
 cipher = { version = "0.5.2", features = ["block-padding"], optional = true }
 ctr = { version = "0.10.1", optional = true }
+des = { version = "0.9.0", optional = true }
 digest = { version = "0.11.3", optional = true }
 ecb = { version = "0.2.0", optional = true }
 getrandom = { version = "0.4.3", optional = true }
 hex = { version = "0.4.3", optional = true }
+kuznyechik = { version = "0.9.0", optional = true }
+magma = { version = "0.10.0", optional = true }
 md-5 = { version = "0.11.0", optional = true }
+mgm = { version = "0.5.0-pre.1", optional = true }
+ocb3 = { version = "0.2.0-rc.3", optional = true }
 ofb = { version = "0.7.1", optional = true }
+rc4 = { version = "0.2.0", optional = true }
+salsa20 = { version = "0.11.0", optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
 sha1 = { version = "0.11.0", optional = true }
 sha2 = { version = "0.11.0", optional = true }
 sha3 = { version = "0.12.0", optional = true }
+sm4 = { version = "0.6.0", optional = true }
 tocat-api = { workspace = true }
 tocat-wasm-abi = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
@@ -64,16 +78,30 @@ encrypt = [
   "dep:aes",
   "dep:aes-gcm",
   "dep:aes-gcm-siv",
+  "dep:aes-siv",
+  "dep:aria",
   "dep:ascon-aead",
   "dep:base64",
+  "dep:camellia",
   "dep:cbc",
+  "dep:ccm",
+  "dep:cfb-mode",
+  "dep:chacha20",
   "dep:chacha20poly1305",
   "dep:cipher",
   "dep:ctr",
+  "dep:des",
   "dep:ecb",
   "dep:getrandom",
   "dep:hex",
+  "dep:kuznyechik",
+  "dep:magma",
+  "dep:mgm",
+  "dep:ocb3",
   "dep:ofb",
+  "dep:rc4",
+  "dep:salsa20",
+  "dep:sm4",
 ]
 frame = []
 hash = [

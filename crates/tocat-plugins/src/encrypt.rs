@@ -92,25 +92,48 @@
 //! setup above, are small against any of them at stream buffer sizes, and are
 //! the part that matters on small datagrams.
 
+mod macros;
+
+#[cfg(test)]
+mod vectors;
+
 use std::{
     path::{Path, PathBuf},
     str,
 };
 
 use ::base64::prelude::{BASE64_STANDARD, Engine as _};
-use aead::{AeadCore, AeadInOut, Nonce, consts::U12};
+use aead::{
+    AeadCore, AeadInOut, Nonce,
+    consts::{U12, U16},
+};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{Aes128Gcm, Aes256Gcm, AesGcm};
-use aes_gcm_siv::{Aes128GcmSiv, Aes256GcmSiv};
+use aes_gcm_siv::{Aes128GcmSiv, Aes256GcmSiv, AesGcmSiv};
+use aes_siv::{Aes128SivAead, Aes256SivAead};
+use aria::{Aria128, Aria192, Aria256};
 use ascon_aead::AsconAead128;
+use camellia::{Camellia128, Camellia192, Camellia256};
+use ccm::Ccm;
+use cfb_mode::{BufDecryptor, BufEncryptor};
+use chacha20::{ChaCha20, XChaCha20};
 use chacha20poly1305::{ChaCha20Poly1305, XChaCha20Poly1305};
 use cipher::{
-    Array, Block, BlockModeDecrypt, BlockModeEncrypt, BlockSizeUser, InvalidLength, KeyInit,
-    KeyIvInit, StreamCipher,
+    Array, Block, BlockCipherEncrypt, BlockModeDecrypt, BlockModeEncrypt, BlockSizeUser,
+    InvalidLength, Iv, KeyInit, KeyIvInit, StreamCipher, StreamCipherError,
     block_padding::{Padding as _, Pkcs7},
     typenum::Unsigned,
 };
+use ctr::{Ctr32BE, Ctr64BE, Ctr128BE};
+use des::{Des, TdesEde3};
+use kuznyechik::Kuznyechik;
+use macros::ciphers;
+use magma::Magma;
+use ocb3::Ocb3;
+use ofb::Ofb;
+use salsa20::{Salsa20, XSalsa20};
 use serde::{Deserialize, Serialize};
+use sm4::Sm4;
 use tocat_api::{
     Boundaries, BuildCtx, ByteSize, ChannelId, ChannelTarget, Ctx, Execution, LogLevel, Needs,
     Plugin, PluginError, PluginFactory, Result, Stage,
@@ -168,9 +191,31 @@ struct Spec {
     /// Block bytes, zero outside [`Family::Block`]. The stage needs this to
     /// size a rotation budget; the cipher implementations read their own.
     block: usize,
+    /// Standard
+    standard: Option<&'static str>,
 }
 
-const fn block(name: &'static str, key: usize, iv: usize, block: usize) -> Spec {
+/// The document that tells another implementation what these bytes are, or
+/// `None` where nothing does. Answers what the bytes are, not whether the
+/// combination is wise, so a withdrawn standard still counts.
+///
+/// The empty string is how a row says nothing specifies it, since a macro
+/// cannot take a bare `none` where it expects a literal.
+const fn standard(document: &'static str) -> Option<&'static str> {
+    if document.is_empty() {
+        None
+    } else {
+        Some(document)
+    }
+}
+
+const fn block(
+    name: &'static str,
+    key: usize,
+    iv: usize,
+    block: usize,
+    document: &'static str,
+) -> Spec {
     Spec {
         name,
         family: Family::Block,
@@ -178,12 +223,14 @@ const fn block(name: &'static str, key: usize, iv: usize, block: usize) -> Spec 
         nonce: iv,
         tag: 0,
         block,
+        standard: standard(document),
     }
 }
 
 /// A keystream mode's IV is the underlying cipher's block, so it is given
-/// here rather than assumed: a 64-bit block cipher takes an 8-byte IV.
-const fn keystream(name: &'static str, key: usize, iv: usize) -> Spec {
+/// here rather than assumed: a 64-bit block cipher takes an 8-byte IV, and a
+/// GOST session transmits half of one.
+const fn keystream(name: &'static str, key: usize, iv: usize, document: &'static str) -> Spec {
     Spec {
         name,
         family: Family::Keystream,
@@ -191,10 +238,11 @@ const fn keystream(name: &'static str, key: usize, iv: usize) -> Spec {
         nonce: iv,
         tag: 0,
         block: 0,
+        standard: standard(document),
     }
 }
 
-const fn aead(name: &'static str, key: usize, nonce: usize) -> Spec {
+const fn aead(name: &'static str, key: usize, nonce: usize, document: &'static str) -> Spec {
     Spec {
         name,
         family: Family::Aead,
@@ -202,83 +250,216 @@ const fn aead(name: &'static str, key: usize, nonce: usize) -> Spec {
         nonce,
         tag: 16,
         block: 0,
+        standard: standard(document),
     }
 }
 
-/// Which cipher a stage runs.
-///
-/// Spellings are matched the way every other identifier in tocat is, so
-/// `aes-256-gcm`, `AES256GCM` and `aes_256_gcm` are one cipher.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Cipher {
-    #[serde(rename = "aes-128-ecb")]
-    Aes128Ecb,
-    #[serde(rename = "aes-192-ecb")]
-    Aes192Ecb,
-    #[serde(rename = "aes-256-ecb")]
-    Aes256Ecb,
-    #[serde(rename = "aes-128-cbc")]
-    Aes128Cbc,
-    #[serde(rename = "aes-192-cbc")]
-    Aes192Cbc,
-    #[serde(rename = "aes-256-cbc")]
-    Aes256Cbc,
-    #[serde(rename = "aes-128-ctr")]
-    Aes128Ctr,
-    #[serde(rename = "aes-192-ctr")]
-    Aes192Ctr,
-    #[serde(rename = "aes-256-ctr")]
-    Aes256Ctr,
-    #[serde(rename = "aes-128-ofb")]
-    Aes128Ofb,
-    #[serde(rename = "aes-192-ofb")]
-    Aes192Ofb,
-    #[serde(rename = "aes-256-ofb")]
-    Aes256Ofb,
-    #[serde(rename = "aes-128-gcm")]
-    Aes128Gcm,
-    #[serde(rename = "aes-192-gcm")]
-    Aes192Gcm,
-    #[serde(rename = "aes-256-gcm")]
-    Aes256Gcm,
-    #[serde(rename = "aes-128-gcm-siv")]
-    Aes128GcmSiv,
-    #[serde(rename = "aes-256-gcm-siv")]
-    Aes256GcmSiv,
-    #[serde(rename = "ascon-128")]
-    Ascon128,
-    #[serde(rename = "chacha20-poly1305", alias = "chachapoly")]
-    ChaCha20Poly1305,
-    #[serde(rename = "xchacha20-poly1305", alias = "xchachapoly")]
-    XChaCha20Poly1305,
-}
+ciphers! {
+    block with iv {
+        // CBC
+        Aes128Cbc = "aes-128-cbc", key 16, iv 16, block 16, standard "NIST SP 800-38A", cbc::Encryptor<Aes128>, cbc::Decryptor<Aes128>;
+        Aes192Cbc = "aes-192-cbc", key 24, iv 16, block 16, standard "NIST SP 800-38A", cbc::Encryptor<Aes192>, cbc::Decryptor<Aes192>;
+        Aes256Cbc = "aes-256-cbc" | "aes-cbc", key 32, iv 16, block 16, standard "NIST SP 800-38A", cbc::Encryptor<Aes256>, cbc::Decryptor<Aes256>;
 
-impl Cipher {
-    /// The one table. Everything decided per cipher is decided from here.
-    const fn spec(self) -> Spec {
-        match self {
-            Self::Aes128Ecb => block("aes-128-ecb", 16, 0, 16),
-            Self::Aes192Ecb => block("aes-192-ecb", 24, 0, 16),
-            Self::Aes256Ecb => block("aes-256-ecb", 32, 0, 16),
-            Self::Aes128Cbc => block("aes-128-cbc", 16, 16, 16),
-            Self::Aes192Cbc => block("aes-192-cbc", 24, 16, 16),
-            Self::Aes256Cbc => block("aes-256-cbc", 32, 16, 16),
-            Self::Aes128Ctr => keystream("aes-128-ctr", 16, 16),
-            Self::Aes192Ctr => keystream("aes-192-ctr", 24, 16),
-            Self::Aes256Ctr => keystream("aes-256-ctr", 32, 16),
-            Self::Aes128Ofb => keystream("aes-128-ofb", 16, 16),
-            Self::Aes192Ofb => keystream("aes-192-ofb", 24, 16),
-            Self::Aes256Ofb => keystream("aes-256-ofb", 32, 16),
-            Self::Aes128Gcm => aead("aes-128-gcm", 16, 12),
-            Self::Aes192Gcm => aead("aes-192-gcm", 24, 12),
-            Self::Aes256Gcm => aead("aes-256-gcm", 32, 12),
-            Self::Aes128GcmSiv => aead("aes-128-gcm-siv", 16, 12),
-            Self::Aes256GcmSiv => aead("aes-256-gcm-siv", 32, 12),
-            Self::Ascon128 => aead("ascon-128", 16, 16),
-            Self::ChaCha20Poly1305 => aead("chacha20-poly1305", 32, 12),
-            Self::XChaCha20Poly1305 => aead("xchacha20-poly1305", 32, 24),
-        }
+        Aria128Cbc = "aria-128-cbc", key 16, iv 16, block 16, standard "NIST SP 800-38A + RFC 5794", cbc::Encryptor<Aria128>, cbc::Decryptor<Aria128>;
+        Aria192Cbc = "aria-192-cbc", key 24, iv 16, block 16, standard "NIST SP 800-38A + RFC 5794", cbc::Encryptor<Aria192>, cbc::Decryptor<Aria192>;
+        Aria256Cbc = "aria-256-cbc" | "aria-cbc", key 32, iv 16, block 16, standard "NIST SP 800-38A + RFC 5794", cbc::Encryptor<Aria256>, cbc::Decryptor<Aria256>;
+
+        Camellia128Cbc = "camellia-128-cbc", key 16, iv 16, block 16, standard "NIST SP 800-38A + RFC 3713", cbc::Encryptor<Camellia128>, cbc::Decryptor<Camellia128>;
+        Camellia192Cbc = "camellia-192-cbc", key 24, iv 16, block 16, standard "NIST SP 800-38A + RFC 3713", cbc::Encryptor<Camellia192>, cbc::Decryptor<Camellia192>;
+        Camellia256Cbc = "camellia-256-cbc" | "camellia-cbc", key 32, iv 16, block 16, standard "NIST SP 800-38A + RFC 3713", cbc::Encryptor<Camellia256>, cbc::Decryptor<Camellia256>;
+
+        MagmaCbc = "magma-cbc", key 32, iv 8, block 8, standard "NIST SP 800-38A + GOST R 34.12-2015", cbc::Encryptor<Magma>, cbc::Decryptor<Magma>;
+        KuznyechikCbc = "kuznyechik-cbc" | "grasshopper-cbc", key 32, iv 16, block 16, standard "NIST SP 800-38A + GOST R 34.12-2015", cbc::Encryptor<Kuznyechik>, cbc::Decryptor<Kuznyechik>;
+
+        Sm4Cbc = "sm4-cbc", key 16, iv 16, block 16, standard "NIST SP 800-38A + GB/T 32907-2016", cbc::Encryptor<Sm4>, cbc::Decryptor<Sm4>;
+
+        DesCbc = "des-cbc", key 8, iv 8, block 8, standard "NIST SP 800-38A + FIPS 46-3 (withdrawn)", cbc::Encryptor<Des>, cbc::Decryptor<Des>;
+        TdesCbc = "des-ede3-cbc" | "3des-cbc" | "tdes-cbc", key 24, iv 8, block 8, standard "NIST SP 800-38A + NIST SP 800-67", cbc::Encryptor<TdesEde3>, cbc::Decryptor<TdesEde3>;
+    }
+
+    block without iv {
+        // ECB
+        Aes128Ecb = "aes-128-ecb", key 16, block 16, standard "NIST SP 800-38A", ecb::Encryptor<Aes128>, ecb::Decryptor<Aes128>;
+        Aes192Ecb = "aes-192-ecb", key 24, block 16, standard "NIST SP 800-38A", ecb::Encryptor<Aes192>, ecb::Decryptor<Aes192>;
+        Aes256Ecb = "aes-256-ecb" | "aes-ecb", key 32, block 16, standard "NIST SP 800-38A", ecb::Encryptor<Aes256>, ecb::Decryptor<Aes256>;
+
+        Aria128Ecb = "aria-128-ecb", key 16, block 16, standard "NIST SP 800-38A + RFC 5794", ecb::Encryptor<Aria128>, ecb::Decryptor<Aria128>;
+        Aria192Ecb = "aria-192-ecb", key 24, block 16, standard "NIST SP 800-38A + RFC 5794", ecb::Encryptor<Aria192>, ecb::Decryptor<Aria192>;
+        Aria256Ecb = "aria-256-ecb" | "aria-ecb", key 32, block 16, standard "NIST SP 800-38A + RFC 5794", ecb::Encryptor<Aria256>, ecb::Decryptor<Aria256>;
+
+        Camellia128Ecb = "camellia-128-ecb", key 16, block 16, standard "NIST SP 800-38A + RFC 3713", ecb::Encryptor<Camellia128>, ecb::Decryptor<Camellia128>;
+        Camellia192Ecb = "camellia-192-ecb", key 24, block 16, standard "NIST SP 800-38A + RFC 3713", ecb::Encryptor<Camellia192>, ecb::Decryptor<Camellia192>;
+        Camellia256Ecb = "camellia-256-ecb" | "camellia-ecb", key 32, block 16, standard "NIST SP 800-38A + RFC 3713", ecb::Encryptor<Camellia256>, ecb::Decryptor<Camellia256>;
+
+        MagmaEcb = "magma-ecb" | "magma", key 32, block 8, standard "GOST R 34.13-2015", ecb::Encryptor<Magma>, ecb::Decryptor<Magma>;
+        KuznyechikEcb = "kuznyechik-ecb" | "grasshopper-ecb", key 32, block 16, standard "GOST R 34.13-2015", ecb::Encryptor<Kuznyechik>, ecb::Decryptor<Kuznyechik>;
+
+        Sm4Ecb = "sm4-ecb", key 16, block 16, standard "NIST SP 800-38A + GB/T 32907-2016", ecb::Encryptor<Sm4>, ecb::Decryptor<Sm4>;
+
+        DesEcb = "des-ecb", key 8, block 8, standard "NIST SP 800-38A + FIPS 46-3 (withdrawn)", ecb::Encryptor<Des>, ecb::Decryptor<Des>;
+        TdesEcb = "des-ede3-ecb" | "3des-ecb" | "tdes-ecb", key 24, block 8, standard "NIST SP 800-38A + NIST SP 800-67", ecb::Encryptor<TdesEde3>, ecb::Decryptor<TdesEde3>;
+    }
+
+    stream with iv {
+        // CFB
+        Aes128Cfb = "aes-128-cfb", key 16, iv 16, standard "NIST SP 800-38A", BufEncryptor<Aes128>, BufDecryptor<Aes128>, cfb_seal, cfb_open;
+        Aes192Cfb = "aes-192-cfb", key 24, iv 16, standard "NIST SP 800-38A", BufEncryptor<Aes192>, BufDecryptor<Aes192>, cfb_seal, cfb_open;
+        Aes256Cfb = "aes-256-cfb" | "aes-cfb", key 32, iv 16, standard "NIST SP 800-38A", BufEncryptor<Aes256>, BufDecryptor<Aes256>, cfb_seal, cfb_open;
+
+        Aria128Cfb = "aria-128-cfb", key 16, iv 16, standard "NIST SP 800-38A + RFC 5794", BufEncryptor<Aria128>, BufDecryptor<Aria128>, cfb_seal, cfb_open;
+        Aria192Cfb = "aria-192-cfb", key 24, iv 16, standard "NIST SP 800-38A + RFC 5794", BufEncryptor<Aria192>, BufDecryptor<Aria192>, cfb_seal, cfb_open;
+        Aria256Cfb = "aria-256-cfb" | "aria-cfb", key 32, iv 16, standard "NIST SP 800-38A + RFC 5794", BufEncryptor<Aria256>, BufDecryptor<Aria256>, cfb_seal, cfb_open;
+
+        Camellia128Cfb = "camellia-128-cfb", key 16, iv 16, standard "NIST SP 800-38A + RFC 3713", BufEncryptor<Camellia128>, BufDecryptor<Camellia128>, cfb_seal, cfb_open;
+        Camellia192Cfb = "camellia-192-cfb", key 24, iv 16, standard "NIST SP 800-38A + RFC 3713", BufEncryptor<Camellia192>, BufDecryptor<Camellia192>, cfb_seal, cfb_open;
+        Camellia256Cfb = "camellia-256-cfb" | "camellia-cfb", key 32, iv 16, standard "NIST SP 800-38A + RFC 3713", BufEncryptor<Camellia256>, BufDecryptor<Camellia256>, cfb_seal, cfb_open;
+
+        MagmaCfb = "magma-cfb", key 32, iv 8, standard "NIST SP 800-38A + GOST R 34.12-2015", BufEncryptor<Magma>, BufDecryptor<Magma>, cfb_seal, cfb_open;
+        KuznyechikCfb = "kuznyechik-cfb" | "grasshopper-cfb", key 32, iv 16, standard "NIST SP 800-38A + GOST R 34.12-2015", BufEncryptor<Kuznyechik>, BufDecryptor<Kuznyechik>, cfb_seal, cfb_open;
+
+        Sm4Cfb = "sm4-cfb", key 16, iv 16, standard "NIST SP 800-38A + GB/T 32907-2016", BufEncryptor<Sm4>, BufDecryptor<Sm4>, cfb_seal, cfb_open;
+
+        DesCfb = "des-cfb", key 8, iv 8, standard "NIST SP 800-38A + FIPS 46-3 (withdrawn)", BufEncryptor<Des>, BufDecryptor<Des>, cfb_seal, cfb_open;
+        TdesCfb = "des-ede3-cfb" | "3des-cfb" | "tdes-cfb", key 24, iv 8, standard "NIST SP 800-38A + NIST SP 800-67", BufEncryptor<TdesEde3>, BufDecryptor<TdesEde3>, cfb_seal, cfb_open;
+    }
+
+    keystream with iv {
+        // CTR
+        Aes128Ctr = "aes-128-ctr", key 16, iv 16, standard "NIST SP 800-38A", Ctr128BE<Aes128>, Ctr128BE<Aes128>;
+        Aes192Ctr = "aes-192-ctr", key 24, iv 16, standard "NIST SP 800-38A", Ctr128BE<Aes192>, Ctr128BE<Aes192>;
+        Aes256Ctr = "aes-256-ctr" | "aes-ctr", key 32, iv 16, standard "NIST SP 800-38A", Ctr128BE<Aes256>, Ctr128BE<Aes256>;
+
+        Aria128Ctr = "aria-128-ctr", key 16, iv 16, standard "NIST SP 800-38A + RFC 5794", Ctr128BE<Aria128>, Ctr128BE<Aria128>;
+        Aria192Ctr = "aria-192-ctr", key 24, iv 16, standard "NIST SP 800-38A + RFC 5794", Ctr128BE<Aria192>, Ctr128BE<Aria192>;
+        Aria256Ctr = "aria-256-ctr" | "aria-ctr", key 32, iv 16, standard "NIST SP 800-38A + RFC 5794", Ctr128BE<Aria256>, Ctr128BE<Aria256>;
+
+        Camellia128Ctr = "camellia-128-ctr", key 16, iv 16, standard "NIST SP 800-38A + RFC 3713", Ctr128BE<Camellia128>, Ctr128BE<Camellia128>;
+        Camellia192Ctr = "camellia-192-ctr", key 24, iv 16, standard "NIST SP 800-38A + RFC 3713", Ctr128BE<Camellia192>, Ctr128BE<Camellia192>;
+        Camellia256Ctr = "camellia-256-ctr" | "camellia-ctr", key 32, iv 16, standard "NIST SP 800-38A + RFC 3713", Ctr128BE<Camellia256>, Ctr128BE<Camellia256>;
+
+        Sm4Ctr = "sm4-ctr", key 16, iv 16, standard "NIST SP 800-38A + GB/T 32907-2016", Ctr128BE<Sm4>, Ctr128BE<Sm4>;
+
+        DesCtr = "des-ctr", key 8, iv 8, standard "NIST SP 800-38A + FIPS 46-3 (withdrawn)", Ctr64BE<Des>, Ctr64BE<Des>;
+        TdesCtr = "des-ede3-ctr" | "3des-ctr" | "tdes-ctr", key 24, iv 8, standard "NIST SP 800-38A + NIST SP 800-67", Ctr64BE<TdesEde3>, Ctr64BE<TdesEde3>;
+
+        // OFB
+        Aes128Ofb = "aes-128-ofb", key 16, iv 16, standard "NIST SP 800-38A", Ofb<Aes128>, Ofb<Aes128>;
+        Aes192Ofb = "aes-192-ofb", key 24, iv 16, standard "NIST SP 800-38A", Ofb<Aes192>, Ofb<Aes192>;
+        Aes256Ofb = "aes-256-ofb" | "aes-ofb", key 32, iv 16, standard "NIST SP 800-38A", Ofb<Aes256>, Ofb<Aes256>;
+
+        Aria128Ofb = "aria-128-ofb", key 16, iv 16, standard "NIST SP 800-38A + RFC 5794", Ofb<Aria128>, Ofb<Aria128>;
+        Aria192Ofb = "aria-192-ofb", key 24, iv 16, standard "NIST SP 800-38A + RFC 5794", Ofb<Aria192>, Ofb<Aria192>;
+        Aria256Ofb = "aria-256-ofb" | "aria-ofb", key 32, iv 16, standard "NIST SP 800-38A + RFC 5794", Ofb<Aria256>, Ofb<Aria256>;
+
+        Camellia128Ofb = "camellia-128-ofb", key 16, iv 16, standard "NIST SP 800-38A + RFC 3713", Ofb<Camellia128>, Ofb<Camellia128>;
+        Camellia192Ofb = "camellia-192-ofb", key 24, iv 16, standard "NIST SP 800-38A + RFC 3713", Ofb<Camellia192>, Ofb<Camellia192>;
+        Camellia256Ofb = "camellia-256-ofb" | "camellia-ofb", key 32, iv 16, standard "NIST SP 800-38A + RFC 3713", Ofb<Camellia256>, Ofb<Camellia256>;
+
+        MagmaOfb = "magma-ofb", key 32, iv 8, standard "NIST SP 800-38A + GOST R 34.12-2015", Ofb<Magma>, Ofb<Magma>;
+        KuznyechikOfb = "kuznyechik-ofb" | "grasshopper-ofb", key 32, iv 16, standard "NIST SP 800-38A + GOST R 34.12-2015", Ofb<Kuznyechik>, Ofb<Kuznyechik>;
+
+        Sm4Ofb = "sm4-ofb", key 16, iv 16, standard "NIST SP 800-38A + GB/T 32907-2016", Ofb<Sm4>, Ofb<Sm4>;
+
+        DesOfb = "des-ofb", key 8, iv 8, standard "NIST SP 800-38A + FIPS 46-3 (withdrawn)", Ofb<Des>, Ofb<Des>;
+        TdesOfb = "des-ede3-ofb" | "3des-ofb" | "tdes-ofb", key 24, iv 8, standard "NIST SP 800-38A + NIST SP 800-67", Ofb<TdesEde3>, Ofb<TdesEde3>;
+
+        // Other
+        ChaCha20 = "chacha20" | "chacha", key 32, iv 12, standard "RFC 8439 section 2.4", ChaCha20, ChaCha20;
+        XChaCha20 = "xchacha20" | "xchacha", key 32, iv 24, standard "draft-irtf-cfrg-xchacha-03", XChaCha20, XChaCha20;
+        Salsa20 = "salsa20" | "salsa", key 32, iv 8, standard "eSTREAM (Bernstein, 2008)", Salsa20, Salsa20;
+        XSalsa20 = "xsalsa20" | "xsalsa", key 32, iv 24, standard "Bernstein, Extending the Salsa20 nonce (2011)", XSalsa20, XSalsa20;
+    }
+
+    keystream with half iv {
+        MagmaCtr = "magma-ctr", key 32, iv 4, standard "GOST R 34.13-2015", Ctr32BE<Magma>, Ctr32BE<Magma>;
+        KuznyechikCtr = "kuznyechik-ctr" | "grasshopper-ctr", key 32, iv 8, standard "GOST R 34.13-2015", Ctr64BE<Kuznyechik>, Ctr64BE<Kuznyechik>;
+    }
+
+    keystream without iv {
+        Rc4 = "rc4", key 32, standard "RFC 6229", rc4::Rc4, rc4::Rc4;
+    }
+
+    aead {
+        // CCM
+        Aes128Ccm = "aes-128-ccm", key 16, nonce 12, standard "NIST SP 800-38C", Ccm<Aes128, U16, U12>;
+        Aes192Ccm = "aes-192-ccm", key 24, nonce 12, standard "NIST SP 800-38C", Ccm<Aes192, U16, U12>;
+        Aes256Ccm = "aes-256-ccm" | "aes-ccm", key 32, nonce 12, standard "NIST SP 800-38C", Ccm<Aes256, U16, U12>;
+
+        Aria128Ccm = "aria-128-ccm", key 16, nonce 12, standard "NIST SP 800-38C + RFC 5794", Ccm<Aria128, U16, U12>;
+        Aria192Ccm = "aria-192-ccm", key 24, nonce 12, standard "NIST SP 800-38C + RFC 5794", Ccm<Aria192, U16, U12>;
+        Aria256Ccm = "aria-256-ccm" | "aria-ccm", key 32, nonce 12, standard "NIST SP 800-38C + RFC 5794", Ccm<Aria256, U16, U12>;
+
+        Camellia128Ccm = "camellia-128-ccm", key 16, nonce 12, standard "RFC 5528", Ccm<Camellia128, U16, U12>;
+        Camellia192Ccm = "camellia-192-ccm", key 24, nonce 12, standard "RFC 5528", Ccm<Camellia192, U16, U12>;
+        Camellia256Ccm = "camellia-256-ccm" | "camellia-ccm", key 32, nonce 12, standard "RFC 5528", Ccm<Camellia256, U16, U12>;
+
+        Sm4Ccm = "sm4-ccm", key 16, nonce 12, standard "RFC 8998", Ccm<Sm4, U16, U12>;
+
+        // GCM
+        Aes128Gcm = "aes-128-gcm", key 16, nonce 12, standard "NIST SP 800-38D", Aes128Gcm;
+        Aes192Gcm = "aes-192-gcm", key 24, nonce 12, standard "NIST SP 800-38D", AesGcm<Aes192, U12>;
+        Aes256Gcm = "aes-256-gcm" | "aes-gcm" | "aes", key 32, nonce 12, standard "NIST SP 800-38D", Aes256Gcm;
+
+        Aria128Gcm = "aria-128-gcm", key 16, nonce 12, standard "RFC 6209", AesGcm<Aria128, U12>;
+        Aria192Gcm = "aria-192-gcm", key 24, nonce 12, standard "NIST SP 800-38D + RFC 5794", AesGcm<Aria192, U12>;
+        Aria256Gcm = "aria-256-gcm" | "aria-gcm" | "aria", key 32, nonce 12, standard "RFC 6209", AesGcm<Aria256, U12>;
+
+        Camellia128Gcm = "camellia-128-gcm", key 16, nonce 12, standard "RFC 6367", AesGcm<Camellia128, U12>;
+        Camellia192Gcm = "camellia-192-gcm", key 24, nonce 12, standard "NIST SP 800-38D + RFC 3713", AesGcm<Camellia192, U12>;
+        Camellia256Gcm = "camellia-256-gcm" | "camellia-gcm" | "camellia", key 32, nonce 12, standard "RFC 6367", AesGcm<Camellia256, U12>;
+
+        KuznyechikGcm = "kuznyechik-gcm" | "grasshopper-gcm", key 32, nonce 12, standard "NIST SP 800-38D + GOST R 34.12-2015", AesGcm<Kuznyechik, U12>;
+
+        Sm4Gcm = "sm4-gcm" | "sm4", key 16, nonce 12, standard "RFC 8998", AesGcm<Sm4, U12>;
+
+        // GCM-SIV
+        Aes128GcmSiv = "aes-128-gcm-siv", key 16, nonce 12, standard "RFC 8452", Aes128GcmSiv;
+        Aes192GcmSiv = "aes-192-gcm-siv", key 24, nonce 12, standard "", AesGcmSiv<Aes192>;
+        Aes256GcmSiv = "aes-256-gcm-siv" | "aes-gcm-siv", key 32, nonce 12, standard "RFC 8452", Aes256GcmSiv;
+
+        Aria128GcmSiv = "aria-128-gcm-siv", key 16, nonce 12, standard "", AesGcmSiv<Aria128>;
+        Aria192GcmSiv = "aria-192-gcm-siv", key 24, nonce 12, standard "", AesGcmSiv<Aria192>;
+        Aria256GcmSiv = "aria-256-gcm-siv" | "aria-gcm-siv", key 32, nonce 12, standard "", AesGcmSiv<Aria256>;
+
+        Camellia128GcmSiv = "camellia-128-gcm-siv", key 16, nonce 12, standard "", AesGcmSiv<Camellia128>;
+        Camellia192GcmSiv = "camellia-192-gcm-siv", key 24, nonce 12, standard "", AesGcmSiv<Camellia192>;
+        Camellia256GcmSiv = "camellia-256-gcm-siv" | "camellia-gcm-siv", key 32, nonce 12, standard "", AesGcmSiv<Camellia256>;
+
+        KuznyechikGcmSiv = "kuznyechik-gcm-siv" | "grasshopper-gcm-siv", key 32, nonce 12, standard "", AesGcmSiv<Kuznyechik>;
+
+        Sm4GcmSiv = "sm4-gcm-siv", key 16, nonce 12, standard "", AesGcmSiv<Sm4>;
+
+        // MGM
+        // Blocked upstream: `mgm` 0.5.0-pre.1 is on aead 0.5 and cipher 0.3,
+        // two generations behind, so nothing in it fits `AeadCipher`.
+        // MagmaMgm = "magma-mgm", key 32, nonce 8, standard "GOST R 34.13-2015";
+
+        // OCB
+        Aes128Ocb = "aes-128-ocb", key 16, nonce 12, standard "RFC 7253", Ocb3<Aes128>;
+        Aes192Ocb = "aes-192-ocb", key 24, nonce 12, standard "RFC 7253", Ocb3<Aes192>;
+        Aes256Ocb = "aes-256-ocb" | "aes-ocb", key 32, nonce 12, standard "RFC 7253", Ocb3<Aes256>;
+
+        Aria128Ocb = "aria-128-ocb", key 16, nonce 12, standard "RFC 7253 + RFC 5794", Ocb3<Aria128>;
+        Aria192Ocb = "aria-192-ocb", key 24, nonce 12, standard "RFC 7253 + RFC 5794", Ocb3<Aria192>;
+        Aria256Ocb = "aria-256-ocb" | "aria-ocb", key 32, nonce 12, standard "RFC 7253 + RFC 5794", Ocb3<Aria256>;
+
+        Camellia128Ocb = "camellia-128-ocb", key 16, nonce 12, standard "RFC 7253 + RFC 3713", Ocb3<Camellia128>;
+        Camellia192Ocb = "camellia-192-ocb", key 24, nonce 12, standard "RFC 7253 + RFC 3713", Ocb3<Camellia192>;
+        Camellia256Ocb = "camellia-256-ocb" | "camellia-ocb", key 32, nonce 12, standard "RFC 7253 + RFC 3713", Ocb3<Camellia256>;
+
+        KuznyechikOcb = "kuznyechik-ocb" | "grasshopper-ocb", key 32, nonce 12, standard "RFC 7253 + GOST R 34.12-2015", Ocb3<Kuznyechik>;
+
+        Sm4Ocb = "sm4-ocb", key 16, nonce 12, standard "RFC 7253 + GB/T 32907-2016", Ocb3<Sm4>;
+
+        // SIV
+        Aes128Siv = "aes-128-siv", key 32, nonce 16, standard "RFC 5297", Aes128SivAead;
+        Aes256Siv = "aes-256-siv" | "aes-siv", key 64, nonce 16, standard "RFC 5297", Aes256SivAead;
+
+        // Other
+        Ascon128 = "ascon-aead128" | "ascon" , key 16, nonce 16, standard "NIST SP 800-232", AsconAead128;
+        Chacha20Poly1305 = "chacha20-poly1305" | "chachapoly", key 32, nonce 12, standard "RFC 8439", ChaCha20Poly1305;
+        XChacha20Poly1305 = "xchacha20-poly1305" | "xchachapoly", key 32, nonce 24, standard "draft-irtf-cfrg-xchacha-03", XChaCha20Poly1305;
     }
 }
 
@@ -376,6 +557,10 @@ pub struct EncryptConfig {
     /// Start a fresh session after this many bytes, in a keystream session.
     #[serde(default)]
     pub rotate_after: Option<ByteSize>,
+
+    /// Using non-standard schemes is permissible
+    #[serde(default)]
+    pub nonstandard: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -418,6 +603,10 @@ pub struct DecryptConfig {
     /// What to do with a record that cannot be opened.
     #[serde(default)]
     pub on_fail: Option<OnFail>,
+
+    /// Using non-standard schemes is permissible
+    #[serde(default)]
+    pub nonstandard: bool,
 }
 
 /// Where key bytes come from, once the mutually exclusive options are settled.
@@ -565,6 +754,27 @@ fn mode(plugin: &'static str, requested: Option<Mode>, spec: Spec) -> Result<Mod
         (None, Family::Aead) => Ok(Mode::Record),
         (None, _) => Ok(Mode::Stream),
     }
+}
+
+/// Refuses a cipher no document specifies, unless the caller asked for one.
+///
+/// A row with no `standard` is one the crates behind it will compute and that
+/// round trips against tocat at both ends, but that no other implementation
+/// is likely to agree with byte for byte. Reaching one by accident is a tunnel
+/// that works until the far end is something else, so it is opt in.
+fn specified(plugin: &'static str, nonstandard: bool, spec: Spec) -> Result<()> {
+    if spec.standard.is_some() || nonstandard {
+        return Ok(());
+    }
+
+    Err(PluginError::config(
+        plugin,
+        format!(
+            "{} is not specified by any document, so nothing else is likely to read it: pass \
+             nonstandard to use it anyway",
+            spec.name
+        ),
+    ))
 }
 
 /// The padding scheme, rejecting the option where nothing pads.
@@ -874,13 +1084,10 @@ impl<A: AeadInOut + Send> Open for AeadCipher<A> {
 
 /// A block mode, driven a block at a time so a session can span calls.
 ///
-/// `init` is what tells ECB from CBC. One takes an IV and one does not, and
-/// their constructors share no trait that a bound could express the
-/// difference through, so the difference is a function pointer chosen where
-/// the cipher is.
+/// `init` is what tells ECB from CBC; see [`Init`].
 struct BlockCipher<M> {
     key: Vec<u8>,
-    init: fn(&[u8], &[u8]) -> Result<M, InvalidLength>,
+    init: Init<M>,
     padding: Padding,
     /// The session, absent until `start` and taken by `finish`.
     mode: Option<M>,
@@ -890,11 +1097,7 @@ struct BlockCipher<M> {
 }
 
 impl<M> BlockCipher<M> {
-    fn new(
-        key: Vec<u8>,
-        padding: Padding,
-        init: fn(&[u8], &[u8]) -> Result<M, InvalidLength>,
-    ) -> Self {
+    fn new(key: Vec<u8>, padding: Padding, init: Init<M>) -> Self {
         Self {
             key,
             init,
@@ -914,14 +1117,75 @@ impl<M> BlockCipher<M> {
     }
 }
 
-/// A key and an IV, for the modes that chain.
+/// How a mode is built for a session, which is the one thing the families do
+/// not agree on: CBC and the keystream modes take a key and an IV, ECB takes a
+/// key alone, and their constructors share no trait a bound could tell them
+/// apart by.
+///
+/// Two blanket impls over the same generic would overlap however the bounds
+/// were written, because coherence is decided without consulting which types
+/// implement what. So the difference is a function pointer, chosen where the
+/// cipher is, and each family keeps one impl of [`Seal`] and one of [`Open`].
+type Init<M> = fn(&[u8], &[u8]) -> Result<M, InvalidLength>;
+
+/// A key and an IV, for a mode that takes one.
 fn with_iv<M: KeyIvInit>(key: &[u8], iv: &[u8]) -> Result<M, InvalidLength> {
     M::new_from_slices(key, iv)
 }
 
-/// A key alone, for ECB, which has nothing to chain.
+/// GOST counter mode transmits half a block and starts the counter at
+/// `iv || 0`, so what arrives is zero-extended to the block the crate wants.
+/// Every other mode here puts the whole IV on the wire, which is why this is
+/// the one place the transmitted width and the constructed width differ.
+fn with_half_iv<M: KeyIvInit>(key: &[u8], iv: &[u8]) -> Result<M, InvalidLength> {
+    let mut block = Iv::<M>::default();
+
+    if iv.len() * 2 != block.len() {
+        return Err(InvalidLength);
+    }
+
+    block[..iv.len()].copy_from_slice(iv);
+
+    M::new_from_slices(key, &block)
+}
+
+/// A key alone, for a mode with no IV to take.
 fn without_iv<M: KeyInit>(key: &[u8], _iv: &[u8]) -> Result<M, InvalidLength> {
     M::new_from_slice(key)
+}
+
+/// What a length-preserving cipher does to a buffer, in place.
+///
+/// The companion to [`Init`], and there for the same reason: CTR and OFB
+/// transform through [`StreamCipher`], while CFB's buffered types do it
+/// through an inherent method that no trait covers. A pointer chosen where
+/// the cipher is lets both share one struct rather than one each.
+type Apply<C> = fn(&mut C, &mut [u8]) -> Result<(), StreamCipherError>;
+
+/// The transform for anything that implements [`StreamCipher`].
+fn xor_keystream<C: StreamCipher>(cipher: &mut C, buf: &mut [u8]) -> Result<(), StreamCipherError> {
+    cipher.try_apply_keystream(buf)
+}
+
+/// The transform for CFB, whose buffered types carry a partial block position
+/// across calls and expose the work as an inherent method rather than a trait
+/// one. Neither can fail, so neither reports anything.
+fn cfb_seal<C: BlockCipherEncrypt>(
+    cipher: &mut BufEncryptor<C>,
+    buf: &mut [u8],
+) -> Result<(), StreamCipherError> {
+    cipher.encrypt(buf);
+    Ok(())
+}
+
+/// CFB decrypts with the block cipher's encrypt direction, like every mode
+/// that builds a keystream, so the bound here is not a mistake.
+fn cfb_open<C: BlockCipherEncrypt>(
+    cipher: &mut BufDecryptor<C>,
+    buf: &mut [u8],
+) -> Result<(), StreamCipherError> {
+    cipher.decrypt(buf);
+    Ok(())
 }
 
 impl<M: BlockModeEncrypt + Send> Seal for BlockCipher<M> {
@@ -1086,26 +1350,41 @@ impl<M: BlockModeDecrypt + Send> Open for BlockCipher<M> {
 }
 
 /// A keystream mode, where encryption and decryption are the same operation.
+///
+/// `init` and `apply` are the two things the members of this family disagree
+/// on. Most take a key and an IV and transform through [`StreamCipher`]; one
+/// with no IV, or whose transform is an inherent method rather than a trait
+/// one, supplies its own pointers instead. See [`Init`] and [`Apply`].
+///
+/// The bounds live on the pointers, so the struct itself needs none, and a
+/// cipher that fits neither trait still fits here.
 struct KeystreamCipher<C> {
     key: Vec<u8>,
+    init: Init<C>,
+    apply: Apply<C>,
     cipher: Option<C>,
 }
 
-impl<C: StreamCipher + KeyIvInit> KeystreamCipher<C> {
-    fn new(key: Vec<u8>) -> Self {
-        Self { key, cipher: None }
+impl<C> KeystreamCipher<C> {
+    fn new(key: Vec<u8>, init: Init<C>, apply: Apply<C>) -> Self {
+        Self {
+            key,
+            init,
+            apply,
+            cipher: None,
+        }
     }
 
     fn open_session(&mut self, plugin: &'static str, iv: &[u8]) -> Result<()> {
-        self.cipher = Some(C::new_from_slices(&self.key, iv).map_err(|_| {
+        self.cipher = Some((self.init)(&self.key, iv).map_err(|_| {
             PluginError::runtime(plugin, "key or iv is the wrong length for this cipher")
         })?);
 
         Ok(())
     }
 
-    /// XOR is its own inverse, so both directions are this.
-    fn apply(&mut self, plugin: &'static str, input: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    /// The keystream is its own inverse, so both directions are this.
+    fn transform(&mut self, plugin: &'static str, input: &[u8], out: &mut Vec<u8>) -> Result<()> {
         let cipher = self
             .cipher
             .as_mut()
@@ -1114,19 +1393,18 @@ impl<C: StreamCipher + KeyIvInit> KeystreamCipher<C> {
 
         out.extend_from_slice(input);
 
-        cipher
-            .try_apply_keystream(&mut out[at..])
+        (self.apply)(cipher, &mut out[at..])
             .map_err(|_| PluginError::runtime(plugin, "the keystream for this nonce is exhausted"))
     }
 }
 
-impl<C: StreamCipher + KeyIvInit + Send> Seal for KeystreamCipher<C> {
+impl<C: Send> Seal for KeystreamCipher<C> {
     fn start(&mut self, iv: &[u8]) -> Result<()> {
         self.open_session(ENCRYPT, iv)
     }
 
     fn update(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<()> {
-        self.apply(ENCRYPT, input, out)
+        self.transform(ENCRYPT, input, out)
     }
 
     fn finish(&mut self, _out: &mut Vec<u8>) -> Result<()> {
@@ -1136,13 +1414,13 @@ impl<C: StreamCipher + KeyIvInit + Send> Seal for KeystreamCipher<C> {
     }
 }
 
-impl<C: StreamCipher + KeyIvInit + Send> Open for KeystreamCipher<C> {
+impl<C: Send> Open for KeystreamCipher<C> {
     fn start(&mut self, iv: &[u8]) -> Result<()> {
         self.open_session(DECRYPT, iv)
     }
 
     fn update(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<()> {
-        self.apply(DECRYPT, input, out)
+        self.transform(DECRYPT, input, out)
     }
 
     fn finish(&mut self, _out: &mut Vec<u8>) -> Result<()> {
@@ -1150,94 +1428,6 @@ impl<C: StreamCipher + KeyIvInit + Send> Open for KeystreamCipher<C> {
 
         Ok(())
     }
-}
-
-/// The encrypting half of the cipher table.
-fn sealer(cipher: Cipher, key: Vec<u8>, padding: Padding) -> Result<Box<dyn Seal>> {
-    Ok(match cipher {
-        Cipher::Aes128Ecb => Box::new(BlockCipher::<ecb::Encryptor<Aes128>>::new(
-            key, padding, without_iv,
-        )),
-        Cipher::Aes192Ecb => Box::new(BlockCipher::<ecb::Encryptor<Aes192>>::new(
-            key, padding, without_iv,
-        )),
-        Cipher::Aes256Ecb => Box::new(BlockCipher::<ecb::Encryptor<Aes256>>::new(
-            key, padding, without_iv,
-        )),
-        Cipher::Aes128Cbc => Box::new(BlockCipher::<cbc::Encryptor<Aes128>>::new(
-            key, padding, with_iv,
-        )),
-        Cipher::Aes192Cbc => Box::new(BlockCipher::<cbc::Encryptor<Aes192>>::new(
-            key, padding, with_iv,
-        )),
-        Cipher::Aes256Cbc => Box::new(BlockCipher::<cbc::Encryptor<Aes256>>::new(
-            key, padding, with_iv,
-        )),
-        Cipher::Aes128Ctr => Box::new(KeystreamCipher::<ctr::Ctr128BE<Aes128>>::new(key)),
-        Cipher::Aes192Ctr => Box::new(KeystreamCipher::<ctr::Ctr128BE<Aes192>>::new(key)),
-        Cipher::Aes256Ctr => Box::new(KeystreamCipher::<ctr::Ctr128BE<Aes256>>::new(key)),
-        Cipher::Aes128Ofb => Box::new(KeystreamCipher::<ofb::Ofb<Aes128>>::new(key)),
-        Cipher::Aes192Ofb => Box::new(KeystreamCipher::<ofb::Ofb<Aes192>>::new(key)),
-        Cipher::Aes256Ofb => Box::new(KeystreamCipher::<ofb::Ofb<Aes256>>::new(key)),
-        Cipher::Aes128Gcm => Box::new(AeadCipher::new(keyed::<Aes128Gcm>(ENCRYPT, &key)?)),
-        Cipher::Aes192Gcm => Box::new(AeadCipher::new(keyed::<AesGcm<Aes192, U12>>(
-            ENCRYPT, &key,
-        )?)),
-        Cipher::Aes256Gcm => Box::new(AeadCipher::new(keyed::<Aes256Gcm>(ENCRYPT, &key)?)),
-        Cipher::Aes128GcmSiv => Box::new(AeadCipher::new(keyed::<Aes128GcmSiv>(ENCRYPT, &key)?)),
-        Cipher::Aes256GcmSiv => Box::new(AeadCipher::new(keyed::<Aes256GcmSiv>(ENCRYPT, &key)?)),
-        Cipher::Ascon128 => Box::new(AeadCipher::new(keyed::<AsconAead128>(ENCRYPT, &key)?)),
-        Cipher::ChaCha20Poly1305 => {
-            Box::new(AeadCipher::new(keyed::<ChaCha20Poly1305>(ENCRYPT, &key)?))
-        }
-        Cipher::XChaCha20Poly1305 => {
-            Box::new(AeadCipher::new(keyed::<XChaCha20Poly1305>(ENCRYPT, &key)?))
-        }
-    })
-}
-
-/// The decrypting half of the cipher table.
-fn opener(cipher: Cipher, key: Vec<u8>, padding: Padding) -> Result<Box<dyn Open>> {
-    Ok(match cipher {
-        Cipher::Aes128Ecb => Box::new(BlockCipher::<ecb::Decryptor<Aes128>>::new(
-            key, padding, without_iv,
-        )),
-        Cipher::Aes192Ecb => Box::new(BlockCipher::<ecb::Decryptor<Aes192>>::new(
-            key, padding, without_iv,
-        )),
-        Cipher::Aes256Ecb => Box::new(BlockCipher::<ecb::Decryptor<Aes256>>::new(
-            key, padding, without_iv,
-        )),
-        Cipher::Aes128Cbc => Box::new(BlockCipher::<cbc::Decryptor<Aes128>>::new(
-            key, padding, with_iv,
-        )),
-        Cipher::Aes192Cbc => Box::new(BlockCipher::<cbc::Decryptor<Aes192>>::new(
-            key, padding, with_iv,
-        )),
-        Cipher::Aes256Cbc => Box::new(BlockCipher::<cbc::Decryptor<Aes256>>::new(
-            key, padding, with_iv,
-        )),
-        Cipher::Aes128Ctr => Box::new(KeystreamCipher::<ctr::Ctr128BE<Aes128>>::new(key)),
-        Cipher::Aes192Ctr => Box::new(KeystreamCipher::<ctr::Ctr128BE<Aes192>>::new(key)),
-        Cipher::Aes256Ctr => Box::new(KeystreamCipher::<ctr::Ctr128BE<Aes256>>::new(key)),
-        Cipher::Aes128Ofb => Box::new(KeystreamCipher::<ofb::Ofb<Aes128>>::new(key)),
-        Cipher::Aes192Ofb => Box::new(KeystreamCipher::<ofb::Ofb<Aes192>>::new(key)),
-        Cipher::Aes256Ofb => Box::new(KeystreamCipher::<ofb::Ofb<Aes256>>::new(key)),
-        Cipher::Aes128Gcm => Box::new(AeadCipher::new(keyed::<Aes128Gcm>(DECRYPT, &key)?)),
-        Cipher::Aes192Gcm => Box::new(AeadCipher::new(keyed::<AesGcm<Aes192, U12>>(
-            DECRYPT, &key,
-        )?)),
-        Cipher::Aes256Gcm => Box::new(AeadCipher::new(keyed::<Aes256Gcm>(DECRYPT, &key)?)),
-        Cipher::Aes128GcmSiv => Box::new(AeadCipher::new(keyed::<Aes128GcmSiv>(DECRYPT, &key)?)),
-        Cipher::Aes256GcmSiv => Box::new(AeadCipher::new(keyed::<Aes256GcmSiv>(DECRYPT, &key)?)),
-        Cipher::Ascon128 => Box::new(AeadCipher::new(keyed::<AsconAead128>(DECRYPT, &key)?)),
-        Cipher::ChaCha20Poly1305 => {
-            Box::new(AeadCipher::new(keyed::<ChaCha20Poly1305>(DECRYPT, &key)?))
-        }
-        Cipher::XChaCha20Poly1305 => {
-            Box::new(AeadCipher::new(keyed::<XChaCha20Poly1305>(DECRYPT, &key)?))
-        }
-    })
 }
 
 pub struct Encrypt {
@@ -1586,6 +1776,8 @@ impl PluginFactory for EncryptFactory {
         let config: EncryptConfig = ctx.config()?;
         let spec = config.cipher.spec();
 
+        specified(ENCRYPT, config.nonstandard, spec)?;
+
         if config.key_out.is_some() && !config.random_key {
             return Err(PluginError::config(
                 ENCRYPT,
@@ -1656,6 +1848,8 @@ impl PluginFactory for DecryptFactory {
         let config: DecryptConfig = ctx.config()?;
         let spec = config.cipher.spec();
 
+        specified(DECRYPT, config.nonstandard, spec)?;
+
         let mode = mode(DECRYPT, config.mode, spec)?;
         let padding = padding(DECRYPT, config.padding, spec)?;
         // The decrypt side counts the same ciphertext the encrypt side does,
@@ -1697,8 +1891,12 @@ mod tests {
 
     use super::*;
 
-    /// 32 bytes, which is enough for every cipher here once truncated.
-    const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    /// 64 bytes, which is the widest key in the table (`aes-256-siv` takes
+    /// two 32-byte keys), and enough for every other cipher once truncated.
+    const KEY: &str = concat!(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    );
 
     #[derive(Default)]
     struct Recorder {
@@ -1744,9 +1942,14 @@ mod tests {
         }
     }
 
+    /// [`KEY`] cut to the length the named cipher takes.
+    fn key_for(cipher: &str) -> &'static str {
+        &KEY[..cipher_of(cipher).spec().key * 2]
+    }
+
     /// The key every test uses unless it is testing key handling.
     fn keyed_config(cipher: &str, extra: Value) -> Value {
-        let key = &KEY[..cipher_of(cipher).spec().key * 2];
+        let key = key_for(cipher);
         let mut config = json!({ "cipher": cipher, "key": key });
         let object = config.as_object_mut().expect("object");
 
@@ -1853,32 +2056,70 @@ mod tests {
     fn every_cipher_round_trips() {
         let message = b"the quick brown fox jumps over the lazy dog, twice over".as_slice();
 
-        for cipher in [
-            "aes-128-ecb",
-            "aes-192-ecb",
-            "aes-256-ecb",
-            "aes-128-cbc",
-            "aes-192-cbc",
-            "aes-256-cbc",
-            "aes-128-ctr",
-            "aes-192-ctr",
-            "aes-256-ctr",
-            "aes-128-ofb",
-            "aes-192-ofb",
-            "aes-256-ofb",
-            "aes-128-gcm",
-            "aes-192-gcm",
-            "aes-256-gcm",
-            "aes-128-gcm-siv",
-            "aes-256-gcm-siv",
-            "ascon-128",
-            "chacha20-poly1305",
-            "xchacha20-poly1305",
-        ] {
+        for cipher in Cipher::ALL {
+            let name = cipher.spec().name;
+            let extra = match cipher.spec().standard {
+                // A row nothing specifies still has to round trip with
+                // itself; it just has to say so first.
+                None => json!({ "nonstandard": true }),
+                Some(_) => json!({}),
+            };
+
             assert_eq!(
-                round_trip(cipher, json!({}), message),
+                round_trip(name, extra, message),
                 message,
-                "{cipher} did not round trip",
+                "{name} did not round trip",
+            );
+        }
+    }
+
+    /// A known answer, read the way a peer would send it.
+    ///
+    /// The vectors themselves drive the ciphers directly, because the
+    /// encrypting side draws its nonce at random and cannot be pinned to a
+    /// published answer. Decryption can: a stage handed a nonce and a
+    /// published ciphertext has to produce the published plaintext. That
+    /// covers the one thing the vectors cannot, which is that the nonce goes
+    /// where the other implementation expects to find it.
+    ///
+    /// One cipher per shape, since what is under test is the framing rather
+    /// than the arithmetic: an aead with a tag, a block mode with an iv, one
+    /// with none, a buffered stream, a keystream, and the half-iv path.
+    #[test]
+    fn a_known_answer_decodes_through_the_stage() {
+        for name in [
+            "aes-256-gcm",
+            "aes-256-cbc",
+            "aes-256-ecb",
+            "aes-256-cfb",
+            "chacha20",
+            "kuznyechik-ctr",
+        ] {
+            let cipher = cipher_of(name);
+            let (key, nonce, plaintext, ciphertext) = super::vectors::vector(name);
+            let mut config = json!({ "cipher": name, "key": hex::encode(&key) });
+
+            // The vectors are whole blocks, so the peer this stands in for
+            // pads nothing; asking for padding elsewhere is refused.
+            if cipher.spec().family == Family::Block {
+                config
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("padding".to_owned(), json!("none"));
+            }
+
+            let mut record = nonce.clone();
+            record.extend_from_slice(&ciphertext);
+
+            let mut sink = Recorder::default();
+            let mut decoder = try_decrypt(config).expect("build");
+            let mut opened = feed(&mut *decoder, &mut sink, &record);
+            opened.extend_from_slice(&eof(&mut *decoder, &mut sink));
+
+            assert_eq!(
+                hex::encode(&opened),
+                hex::encode(&plaintext),
+                "{name} did not read its own known answer off the wire",
             );
         }
     }
@@ -2191,7 +2432,7 @@ mod tests {
         assert!(
             try_encrypt(json!({
                 "cipher": "aes-256-gcm",
-                "key": KEY,
+                "key": key_for("aes-256-gcm"),
                 "key-env": "TOCAT_TEST_KEY",
             }))
             .is_err()
@@ -2276,7 +2517,7 @@ mod tests {
     fn the_cipher_is_spelled_however_you_like() {
         for spelling in ["aes-256-gcm", "AES256GCM", "aes_256_gcm"] {
             assert!(
-                try_encrypt(json!({"cipher": spelling, "key": KEY})).is_ok(),
+                try_encrypt(json!({"cipher": spelling, "key": key_for("aes-256-gcm")})).is_ok(),
                 "{spelling} did not name aes-256-gcm",
             );
         }
@@ -2284,8 +2525,33 @@ mod tests {
 
     #[test]
     fn an_unknown_cipher_or_option_is_refused() {
-        assert!(try_encrypt(json!({"cipher": "rot13", "key": KEY})).is_err());
-        assert!(try_encrypt(json!({"cipher": "aes-256-gcm", "key": KEY, "rounds": 3})).is_err());
+        let key = key_for("aes-256-gcm");
+
+        assert!(try_encrypt(json!({"cipher": "rot13", "key": key})).is_err());
+        assert!(try_encrypt(json!({"cipher": "aes-256-gcm", "key": key, "rounds": 3})).is_err());
+    }
+
+    /// Both halves refuse it, and each says so in its own name. The decrypt
+    /// side reporting `encrypt` would send someone to the wrong stage.
+    #[test]
+    fn a_cipher_no_document_specifies_needs_the_opt_in() {
+        let cipher = "sm4-gcm-siv";
+        let key = key_for(cipher);
+        let plain = json!({ "cipher": cipher, "key": key });
+        let opted = json!({ "cipher": cipher, "key": key, "nonstandard": true });
+
+        let Err(refused) = try_encrypt(plain.clone()) else {
+            panic!("encrypt built {cipher} without the opt-in");
+        };
+        assert!(refused.to_string().contains(cipher), "{refused}");
+
+        let Err(refused) = try_decrypt(plain) else {
+            panic!("decrypt built {cipher} without the opt-in");
+        };
+        assert!(refused.to_string().contains(DECRYPT), "{refused}");
+
+        assert!(try_encrypt(opted.clone()).is_ok());
+        assert!(try_decrypt(opted).is_ok());
     }
 
     #[test]
