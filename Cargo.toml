@@ -31,3 +31,7 @@ wasmtime = "47.0.3"
 path = "crates/tocat-plugins"
 version = "0.2.0"
 default-features = false
+
+[profile.ci]
+inherits = "dev"
+opt-level = 1
