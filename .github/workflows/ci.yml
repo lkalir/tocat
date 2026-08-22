@@ -1,0 +1,167 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    # edited so that retitling a pull request rechecks the title below. It also
+    # fires on description and base branch edits, which reruns the whole job
+    # off warm caches.
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+# A superseded run on a branch has nothing left to prove. Runs on main are the
+# ones that populate the caches every other ref restores from, so they finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # One job rather than one per check: the dependency graph, wasmtime included,
+  # is expensive to compile and every check needs it. Splitting the checks up
+  # would build it once per job, since each job gets its own Cargo cache.
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v35
+        with:
+          nix_conf: |
+            keep-env-derivations = true
+            keep-outputs = true
+
+      - name: Restore and save the Nix store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+          # A pull request from a fork carries a read-only token, so the purge
+          # call would fail there. Such a run has nothing to purge in any case,
+          # since it cannot write caches either.
+          purge: ${{ !github.event.pull_request.head.repo.fork }}
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      - name: Build the dev shell
+        run: nix develop --command bash -c 'dirname "$(command -v cargo)" >> "$GITHUB_PATH"'
+
+      # rust-cache already keys on Cargo.lock; the extra key adds flake.lock, so
+      # a toolchain bump invalidates compiled dependencies the same way a
+      # dependency bump does. Saving on failure keeps a red run from throwing
+      # away a cold-built dependency graph.
+      - name: Cache Cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ hashFiles('flake.lock') }}
+          cache-on-failure: true
+
+      # Every check below runs even after an earlier one fails, so a push gets
+      # one complete report instead of one finding per round trip. The job is
+      # still red as soon as any of them is.
+
+      # Squash merging discards the branch commits and writes the pull request
+      # title as the commit on main, which is what release-plz reads to pick the
+      # next version and what cliff.toml renders. The branch commits themselves
+      # are the commit-msg hook's business and never reach main.
+      #
+      # This holds only while the repository's squash commit message setting is
+      # "pull request title"; on the GitHub default a single-commit pull request
+      # squashes to that commit's message instead and this check proves nothing.
+      #
+      # The title is untrusted input, so it goes through the environment rather
+      # than into the script text, where a backtick would be executed.
+      - name: Check pull request title
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: nix develop --command bash -euo pipefail -c 'printf "%s\n" "$PR_TITLE" | commitlint --verbose'
+
+      - name: Check Rust formatting
+        if: ${{ !cancelled() }}
+        run: nix develop --command cargo-nightly fmt --all --check
+
+      - name: Check Markdown and JSON formatting
+        if: ${{ !cancelled() }}
+        run: nix develop --command dprint check
+
+      - name: Check lints
+        if: ${{ !cancelled() }}
+        run: nix develop --command cargo clippy --workspace --locked --all-targets -- -D warnings
+
+      # The plugin set is a feature set, and README.md tells people to subtract
+      # from it. Only the default build is compiled anywhere else in this job,
+      # so without these the documented combinations break unnoticed.
+      - name: Check documented feature combinations
+        if: ${{ !cancelled() }}
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            cargo check -p tocat --locked --no-default-features
+            cargo check -p tocat --locked --no-default-features --features tee
+            cargo check -p tocat --locked --no-default-features --features all-plugins-no-wasm
+          '
+
+      - name: Build the book
+        if: ${{ !cancelled() }}
+        run: nix develop --command mdbook build docs
+
+      - name: Package the book for Pages
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: docs/book
+
+      - name: Run tests
+        if: ${{ !cancelled() }}
+        run: nix develop --command cargo nextest run --workspace --locked --profile ci
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Publishing is a job of its own because it needs write scopes that no check
+  # should be holding, and job permissions replace the workflow's rather than
+  # adding to them. needs: check means a red run publishes nothing.
+  deploy-docs:
+    name: Deploy docs
+    needs: check
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Deploys the artifact the check job packed; there is nothing to check out
+      # or build here. Pinned to an exact release because these two actions do
+      # not reliably carry a floating major tag.
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5.0.0
+
