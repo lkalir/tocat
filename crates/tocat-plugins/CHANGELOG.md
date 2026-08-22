@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/lkalir/tocat/compare/tocat-plugins-v0.2.0...tocat-plugins-v0.2.1) - 2026-08-22
+
+### Added
+
+- *(plugins)* generate the encrypt cipher table from a macro
+- *(plugins)* add null framing mode
+- *(plugins)* add encryption plugin
+- *(plugins)* limit plugins can count packets now
+
 ## [0.2.0](https://github.com/lkalir/tocat/compare/tocat-plugins-v0.1.0...tocat-plugins-v0.2.0) - 2026-08-15
 
 ### Added
