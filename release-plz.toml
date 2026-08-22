@@ -2,6 +2,7 @@
 
 [workspace]
 release_always = false
+pr_name = "chore: release{% if version %} v{{ version }}{% endif %}"
 
 [changelog]
 protect_breaking_commits = true
