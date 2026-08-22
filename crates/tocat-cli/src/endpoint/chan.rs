@@ -49,8 +49,9 @@ use crate::endpoint::{
     parse::{Opt, ParseEndpointError},
 };
 
-/// Messages held in each direction before a send waits.
-const DEFAULT_CAPACITY: usize = 64;
+/// Messages held in each direction before a send waits, for an embedder with
+/// no opinion of its own. See [`register`] for what the number costs.
+pub const DEFAULT_CAPACITY: usize = 64;
 
 /// One message. A `Vec` rather than a borrowed slice because it outlives the
 /// call that produced it, and a copy per message is what a queue costs.
@@ -86,6 +87,12 @@ fn registry() -> &'static Mutex<HashMap<String, Pending>> {
 }
 
 /// Register a channel under `name` and take the embedder's end of it.
+///
+/// `capacity` is how many messages each direction holds before a send waits,
+/// and [`DEFAULT_CAPACITY`] is the number to pass when there is no reason to
+/// pick another: too small serialises the relay against the embedder, too
+/// large hides a slow consumer until the memory is gone. Zero is raised to
+/// one, since a queue nothing can be put into is not a queue.
 ///
 /// Registering over a name that is already there replaces it, and whatever was
 /// registered before is dropped: a relay that had not yet connected to it will

@@ -14,7 +14,7 @@
 //!
 //! [`datagram`]: crate::endpoint::datagram
 
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -27,9 +27,46 @@ use crate::{
         Connection, DEFAULT_HOST, DEFAULT_MAX_CONNECTIONS, DEFAULT_PORT, EndpointStream,
         datagram::{self, Demux},
         parse::{Opt, ParseEndpointError, host_port},
+        sockopt::{Family, SocketOptions},
     },
     shutdown::Shutdown,
 };
+
+/// Create, configure, and bind, in that order.
+///
+/// `UdpSocket::bind` does the first and the last in one step, which leaves no
+/// moment for `reuseaddr`, so the socket is built by hand. Nothing here is
+/// datagram specific except the socket type; the shape is the same on the unix
+/// listener uses.
+async fn bind_datagram(addr: SocketAddr, options: &SocketOptions) -> std::io::Result<UdpSocket> {
+    use rustix::net::{AddressFamily, SocketType, socket};
+
+    let family = if addr.is_ipv4() {
+        AddressFamily::INET
+    } else {
+        AddressFamily::INET6
+    };
+
+    let fd = socket(family, SocketType::DGRAM, None)?;
+    options.apply_before(&fd)?;
+    rustix::net::bind(&fd, &addr)?;
+
+    // tokio requires this of anything handed to `from_std`, and forgetting it
+    // blocks the runtime rather than failing.
+    let socket = std::net::UdpSocket::from(fd);
+    socket.set_nonblocking(true)?;
+
+    UdpSocket::from_std(socket)
+}
+
+/// The first address a name resolves to, or an error naming what failed to
+/// resolve.
+async fn resolve(addr: impl tokio::net::ToSocketAddrs, what: &str) -> std::io::Result<SocketAddr> {
+    tokio::net::lookup_host(addr)
+        .await?
+        .next()
+        .ok_or_else(|| std::io::Error::other(format!("{what} resolved to no address")))
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Udp {
@@ -40,6 +77,8 @@ pub struct Udp {
     pub bind: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub options: SocketOptions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -59,6 +98,8 @@ pub struct UdpListen {
         alias = "max-conns"
     )]
     pub max_connections: Option<NonZeroUsize>,
+    #[serde(flatten)]
+    pub options: SocketOptions,
 }
 
 impl Udp {
@@ -74,11 +115,13 @@ impl Udp {
 
         let mut bind = None;
         let mut name = None;
+        let mut options = SocketOptions::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "bind" => bind = Some(opt.string()?),
                 "name" => name = Some(opt.string()?),
+                _ if options.option(&opt, Family::Datagram)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -87,6 +130,7 @@ impl Udp {
             addr: body.to_owned(),
             bind,
             name,
+            options,
         })
     }
 
@@ -106,22 +150,19 @@ impl Udp {
             .next()
             .with_context(|| format!("{} resolved to no address", self.addr))?;
 
-        let socket = match &self.bind {
-            Some(local) => UdpSocket::bind(local.as_str())
+        let local = match &self.bind {
+            Some(local) => resolve(local.as_str(), local)
                 .await
-                .with_context(|| format!("binding {local}"))?,
-            None => {
-                let wildcard: std::net::SocketAddr = if peer.is_ipv4() {
-                    (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
-                } else {
-                    (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
-                };
-
-                UdpSocket::bind(wildcard)
-                    .await
-                    .with_context(|| format!("binding {wildcard}"))?
-            }
+                .with_context(|| format!("resolving {local}"))?,
+            None if peer.is_ipv4() => (std::net::Ipv4Addr::UNSPECIFIED, 0).into(),
+            None => (std::net::Ipv6Addr::UNSPECIFIED, 0).into(),
         };
+
+        let socket = bind_datagram(local, &self.options)
+            .await
+            .with_context(|| format!("binding {local}"))?;
+
+        self.options.apply(&socket)?;
 
         socket
             .connect(peer)
@@ -144,12 +185,14 @@ impl UdpListen {
         let mut name = None;
         let mut fork = false;
         let mut max_connections = None;
+        let mut options = SocketOptions::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "fork" => fork = opt.flag()?,
                 "maxconnections" | "maxconn" | "maxconns" => max_connections = Some(opt.count()?),
                 "name" => name = Some(opt.string()?),
+                _ if options.option(&opt, Family::Datagram)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -160,6 +203,7 @@ impl UdpListen {
             name,
             fork,
             max_connections,
+            options,
         })
     }
 
@@ -186,7 +230,12 @@ impl UdpListen {
 
     /// Bind without peering, for the caller that owns the receive loop.
     pub async fn bind(&self) -> std::io::Result<UdpSocket> {
-        UdpSocket::bind(self.addr()).await
+        let (host, port) = self.addr();
+        let addr = resolve((host, port), &format!("{host}:{port}")).await?;
+
+        let socket = bind_datagram(addr, &self.options).await?;
+        self.options.apply(&socket)?;
+        Ok(socket)
     }
 
     /// Bind and start demultiplexing datagrams by source address.

@@ -52,6 +52,7 @@ use tracing::info;
 use crate::endpoint::{
     Connection, EndpointStream,
     parse::{Opt, ParseEndpointError},
+    sockopt::{DEFAULT_BACKLOG, Family, SocketOptions},
     sys::{Mode, PathGuard},
 };
 
@@ -132,6 +133,17 @@ impl SocketPath {
         std::os::unix::net::SocketAddr::from_pathname(&self.0)
     }
 
+    /// The same addres for `rustix`, which is how a listener gets built when
+    /// the backlog has to be chosen rather than accepted.
+    pub(super) fn rustix_addr(&self) -> std::io::Result<rustix::net::SocketAddrUnix> {
+        #[cfg(target_os = "linux")]
+        if let Some(name) = self.abstract_name() {
+            return Ok(rustix::net::SocketAddrUnix::new_abstract_name(name)?);
+        }
+
+        Ok(rustix::net::SocketAddrUnix::new(&self.0)?)
+    }
+
     /// Reject an address this platform cannot express, here rather than at
     /// bind, where it would arrive as an error about NUL bytes in a path.
     pub(super) fn supported(&self) -> anyhow::Result<()> {
@@ -175,6 +187,32 @@ impl Serialize for SocketPath {
             self.0.serialize(serializer)
         }
     }
+}
+
+/// Create, bind, and listen, with a backlog of our choosing.
+///
+/// `UnixListener::bind` fixes the backlog and offers no way in, so the socket
+/// is built by hand. The address translation, including the abstract
+/// namespace, stays in [`SocketPath`].
+fn listen_unix(
+    path: &SocketPath,
+    backlog: i32,
+    options: &SocketOptions,
+) -> std::io::Result<UnixListener> {
+    use rustix::net::{AddressFamily, SocketType, socket};
+
+    let fd = socket(AddressFamily::UNIX, SocketType::STREAM, None)?;
+    options.apply_before(&fd)?;
+
+    rustix::net::bind(&fd, &path.rustix_addr()?)?;
+    rustix::net::listen(&fd, backlog)?;
+
+    // tokio requires this of anything handed to `from_std`, and forgetting it
+    // blocks the runtime rather than failing.
+    let listener = std::os::unix::net::UnixListener::from(fd);
+    listener.set_nonblocking(true)?;
+
+    UnixListener::from_std(listener)
 }
 
 /// Clear a path left behind by a dead server, and refuse to touch a live one.
@@ -229,6 +267,8 @@ pub struct Unix {
     pub path: SocketPath,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub options: SocketOptions,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -244,6 +284,10 @@ pub struct UnixListen {
     pub unlink: bool,
     #[serde(default)]
     pub mode: Option<Mode>,
+    #[serde(default)]
+    pub backlog: Option<NonZeroUsize>,
+    #[serde(flatten)]
+    pub options: SocketOptions,
 }
 
 impl Unix {
@@ -254,10 +298,12 @@ impl Unix {
         opts: impl Iterator<Item = Opt<'a>>,
     ) -> Result<Self, ParseEndpointError> {
         let mut name = None;
+        let mut options = SocketOptions::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "name" => name = Some(opt.string()?),
+                _ if options.option(&opt, Family::UnixStream)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -265,6 +311,7 @@ impl Unix {
         Ok(Self {
             path: SocketPath::from_spec(body),
             name,
+            options,
         })
     }
 
@@ -280,6 +327,8 @@ impl Unix {
         let stream = UnixStream::connect(self.path.as_path())
             .await
             .with_context(|| format!("connecting to {}", self.path))?;
+
+        self.options.apply(&stream)?;
 
         Ok(EndpointStream::unix(stream).into_connection())
     }
@@ -297,9 +346,12 @@ impl UnixListen {
         let mut max_connections = None;
         let mut unlink = false;
         let mut mode = None;
+        let mut backlog = None;
+        let mut options = SocketOptions::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
+                "backlog" => backlog = Some(opt.count()?),
                 "fork" => fork = opt.flag()?,
                 "maxconnections" | "maxconn" => {
                     max_connections = Some(opt.count()?);
@@ -307,6 +359,7 @@ impl UnixListen {
                 "mode" => mode = Some(opt.mode()?),
                 "name" => name = Some(opt.string()?),
                 "unlink" => unlink = opt.flag()?,
+                _ if options.option(&opt, Family::UnixStream)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -318,6 +371,8 @@ impl UnixListen {
             max_connections,
             unlink,
             mode,
+            backlog,
+            options,
         })
     }
 
@@ -341,12 +396,25 @@ impl UnixListen {
             .await?;
         }
 
-        let listener = UnixListener::bind(self.path.as_path())
+        let listener = listen_unix(&self.path, self.backlog(), &self.options)
             .with_context(|| format!("binding {}", self.path))?;
 
         apply_mode(&self.path, self.mode)?;
 
         Ok(listener)
+    }
+
+    /// How deep to let the kernel queue connections this relay has not yet
+    /// accepted.
+    pub fn backlog(&self) -> i32 {
+        self.backlog.map_or(DEFAULT_BACKLOG as i32, |n| {
+            i32::try_from(n.get()).unwrap_or(i32::MAX)
+        })
+    }
+
+    /// Options an accepted connection carries, applied by whoever accepted it.
+    pub fn accepted(&self, stream: &UnixStream) -> std::io::Result<()> {
+        self.options.apply(stream)
     }
 
     /// Bind and take a single peer.
@@ -355,6 +423,7 @@ impl UnixListen {
         let guard = self.path.guard();
         info!(path = %self.path, "listening");
         let (stream, _) = listener.accept().await?;
+        self.accepted(&stream)?;
 
         Ok(EndpointStream::unix(stream).into_connection_with_guard(guard))
     }
@@ -433,6 +502,7 @@ mod tests {
         let encoded = toml::to_string(&Unix {
             path: SocketPath::from_spec("@tocat"),
             name: Some("control".to_owned()),
+            options: SocketOptions::default(),
         })
         .expect("serialises");
 

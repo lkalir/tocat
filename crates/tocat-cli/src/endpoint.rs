@@ -54,6 +54,7 @@ mod file;
 mod parse;
 mod pipe;
 mod pty;
+mod sockopt;
 mod stdio;
 mod stream;
 mod sys;
@@ -67,13 +68,14 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Serialize};
 
 pub use self::{
-    chan::{Chan, Channel, Message, register, unregister},
+    chan::{Chan, Channel, DEFAULT_CAPACITY, Message, register, unregister},
     datagram::Demux,
     exec::{Exec, System},
     file::File,
     parse::ParseEndpointError,
     pipe::Pipe,
     pty::{Pty, PtyExec},
+    sockopt::{Keepalive, SocketOptions},
     stdio::Stdio,
     stream::{
         BoxRead, BoxWrite, Connection, DatagramSocket, EndpointStream, MessageSocket, ReadHalf,

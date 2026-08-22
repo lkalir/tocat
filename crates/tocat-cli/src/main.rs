@@ -14,28 +14,19 @@
 //! and opens its side channels, so a bad declaration fails here rather than on
 //! the first byte of the first connection.
 
-mod buffer;
-mod child;
-mod cli;
-mod config;
-mod endpoint;
-mod host;
-mod logging;
-mod progress;
-mod pump;
-mod relay;
-mod shutdown;
-
 use std::{process::ExitCode, time::Duration};
 
 use clap::Parser;
-use cli::Cli;
-use config::{load_config, resolve};
-use logging::{bootstrap_logging, init_logging};
+use tocat::{
+    cli::Cli,
+    config::{load_config, resolve},
+    logging::{bootstrap_logging, init_logging},
+    progress::{self, Progress},
+    relay::Relay,
+    shutdown,
+};
 use tocat_api::Registry;
 use tracing::{debug, error};
-
-use crate::{progress::Progress, relay::Relay};
 
 /// How long teardown waits on blocking tasks before leaving them behind.
 ///

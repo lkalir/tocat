@@ -45,8 +45,8 @@ use tracing::{Instrument, debug, error, info, warn};
 use crate::{
     buffer::Buffer,
     endpoint::{
-        Demux, Direction, EndpointSpec, EndpointStream, PathGuard, ReadHalf, SyncRead, SyncWrite,
-        WriteHalf,
+        Demux, Direction, EndpointSpec, EndpointStream, PathGuard, ReadHalf, SocketOptions,
+        SyncRead, SyncWrite, WriteHalf,
     },
     host::{ChannelPlan, Channels},
     progress::{self, Counter, Meter},
@@ -55,8 +55,8 @@ use crate::{
 };
 
 enum Listener {
-    Tcp(TcpListener),
-    Unix(UnixListener),
+    Tcp(TcpListener, SocketOptions),
+    Unix(UnixListener, SocketOptions),
     /// Connection oriented like the others, message oriented like the one
     /// below: an accepted seqpacket socket is a datagram endpoint.
     Seqpacket(UnixSeqpacketListener),
@@ -77,12 +77,12 @@ impl Listener {
             EndpointSpec::TcpListen(e) => {
                 let l = e.bind().await?;
                 info!(local = %l.local_addr()?, "listening");
-                Ok((Listener::Tcp(l), None))
+                Ok((Listener::Tcp(l, e.options.clone()), None))
             }
             EndpointSpec::UnixListen(e) => {
                 let l = e.bind().await?;
                 info!(path = %e.path, "listening");
-                Ok((Listener::Unix(l), e.path.guard()))
+                Ok((Listener::Unix(l, e.options.clone()), e.path.guard()))
             }
             EndpointSpec::UnixSeqpacketListen(e) => {
                 let l = e.bind().await?;
@@ -104,14 +104,20 @@ impl Listener {
     }
 
     /// Allow a peer to connect.
+    ///
+    /// An option that will not apply comes back as an accept error, and
+    /// [`is_fatal_accept`] treats it as fatal: a connection that silently
+    /// ignored what the endpoint asked for is worse than a loud refusal.
     async fn accept(&mut self) -> std::io::Result<(EndpointStream, String)> {
         match self {
-            Listener::Tcp(l) => {
+            Listener::Tcp(l, options) => {
                 let (s, peer) = l.accept().await?;
+                options.apply(&s)?;
                 Ok((EndpointStream::tcp(s), peer.to_string()))
             }
-            Listener::Unix(l) => {
+            Listener::Unix(l, options) => {
                 let (s, peer) = l.accept().await?;
+                options.apply(&s)?;
                 let label = peer
                     .as_pathname()
                     .map(|p| p.display().to_string())

@@ -25,7 +25,10 @@ console-subscriber = { version = "0.5.0", optional = true }
 futures = "0.3.33"
 futures-util = "0.3.33"
 pty-process = { version = "0.5.3", features = ["async"] }
-rustix = { version = "1.1.4", features = ["fs", "pipe", "pty", "termios"] }
+rustix = {
+  version = "1.1.4",
+  features = ["fs", "net", "pipe", "pty", "termios"]
+}
 serde = { workspace = true }
 serde_json = { workspace = true }
 tocat-api = { workspace = true }
