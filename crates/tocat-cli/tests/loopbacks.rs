@@ -17,8 +17,8 @@ use tocat::{
 #[cfg(feature = "block")]
 use tokio::sync::mpsc;
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::{TcpListener, TcpStream},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+    net::{TcpListener, TcpStream, UdpSocket, UnixListener, UnixStream},
     task::JoinHandle,
     time::{sleep, timeout},
 };
@@ -99,11 +99,36 @@ async fn reserve_port() -> u16 {
     listener.local_addr().expect("reserved address").port()
 }
 
+/// The same, in the other port namespace. A reserved TCP port says nothing
+/// about the UDP port of the same number.
+async fn reserve_udp_port() -> u16 {
+    let socket = UdpSocket::bind(LOOPBACK_ANY)
+        .await
+        .expect("reserve a udp port");
+
+    socket.local_addr().expect("reserved address").port()
+}
+
 /// The relay binds inside its own task, so a connect can arrive first.
 async fn connect_tcp(port: u16) -> TcpStream {
     timeout(READY, async {
         loop {
             match TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(stream) => return stream,
+                Err(_) => sleep(POLL).await,
+            }
+        }
+    })
+    .await
+    .expect("the relay never listened")
+}
+
+/// The same wait, for a stream socket that also has to appear on the
+/// filesystem.
+async fn connect_unix(path: &Path) -> UnixStream {
+    timeout(READY, async {
+        loop {
+            match UnixStream::connect(path).await {
                 Ok(stream) => return stream,
                 Err(_) => sleep(POLL).await,
             }
@@ -129,27 +154,67 @@ async fn connect_seqpacket(path: &Path) -> UnixSeqpacket {
 
 /// The far side of the relay: writes every chunk back and returns everything it
 /// saw, so a case can assert on both directions.
+///
+/// Generic over the stream because the transport under it is what several of
+/// these cases vary, and the far side behaves the same either way.
+async fn echo<S: AsyncRead + AsyncWrite + Unpin>(mut stream: S) -> Vec<u8> {
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 4096];
+
+    loop {
+        let n = stream.read(&mut buf).await.expect("far read");
+        if n == 0 {
+            break;
+        }
+
+        seen.extend_from_slice(&buf[..n]);
+        stream.write_all(&buf[..n]).await.expect("far write");
+    }
+
+    // Without this the client's read to end never returns.
+    stream.shutdown().await.expect("far half close");
+
+    seen
+}
+
 fn spawn_tcp_echo(listener: TcpListener) -> JoinHandle<Vec<u8>> {
     tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("far accept");
+        let (stream, _) = listener.accept().await.expect("far accept");
+        echo(stream).await
+    })
+}
 
-        let mut seen = Vec::new();
+fn spawn_unix_echo(listener: UnixListener) -> JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("far accept");
+        echo(stream).await
+    })
+}
+
+/// The far side of a forked relay: one echo per accepted connection, for as
+/// long as the case runs. Nothing awaits this; it is dropped with the runtime.
+fn spawn_tcp_echo_each(listener: TcpListener) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.expect("far accept");
+
+            tokio::spawn(async move {
+                echo(stream).await;
+            });
+        }
+    })
+}
+
+/// The connectionless far side. Every datagram goes back where it came from,
+/// which for a relay's sink is the relay rather than the original client.
+fn spawn_udp_echo(socket: UdpSocket) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let mut buf = [0u8; 4096];
 
         loop {
-            let n = stream.read(&mut buf).await.expect("far read");
-            if n == 0 {
-                break;
-            }
-
-            seen.extend_from_slice(&buf[..n]);
-            stream.write_all(&buf[..n]).await.expect("far write");
+            let (n, peer) = socket.recv_from(&mut buf).await.expect("far recv");
+            socket.send_to(&buf[..n], peer).await.expect("far send");
         }
-
-        // Without this the client's read to end never returns.
-        stream.shutdown().await.expect("far half close");
-
-        seen
     })
 }
 
@@ -376,6 +441,196 @@ async fn shutdown_flushes_buffered_bytes() {
         );
 
         relay.await.expect("relay task").expect("relay run");
+    })
+    .await;
+}
+
+/// The second stream transport, which the endpoint restructure ports the same
+/// way as the first and which nothing else here would catch.
+#[tokio::test]
+async fn unix_round_trip() {
+    run(async {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let far_path = dir.path().join("far.sock");
+        let relay_path = dir.path().join("relay.sock");
+
+        let far = UnixListener::bind(&far_path).expect("far listener");
+        let echo = spawn_unix_echo(far);
+
+        let (relay, _trigger) = start(
+            &format!("unix-listen:{}", relay_path.display()),
+            &format!("unix:{}", far_path.display()),
+            &[],
+        )
+        .await;
+
+        let mut client = connect_unix(&relay_path).await;
+        client.write_all(PAYLOAD).await.expect("client write");
+        client.shutdown().await.expect("client half close");
+
+        let mut echoed = Vec::new();
+        client
+            .read_to_end(&mut echoed)
+            .await
+            .expect("client read back");
+
+        let seen = echo.await.expect("echo task");
+
+        assert_eq!(seen, PAYLOAD, "the forward path altered the bytes");
+        assert_eq!(echoed, PAYLOAD, "the reverse path altered the bytes");
+
+        relay.await.expect("relay task").expect("relay run");
+    })
+    .await;
+}
+
+/// `fork`, which is `serve` rather than `run_once`: a listener, an accept loop,
+/// a semaphore, and a fresh chain per connection.
+///
+/// The connections are sequential on purpose. What regresses here is an accept
+/// loop that serves the first peer and then stops, or a per-connection chain
+/// that is built once and shared; both show up without the timing sensitivity
+/// of racing two clients.
+#[tokio::test]
+async fn fork_serves_connections_in_turn() {
+    run(async {
+        let far = TcpListener::bind(LOOPBACK_ANY).await.expect("far listener");
+        let far_addr = far.local_addr().expect("far address");
+        let _far = spawn_tcp_echo_each(far);
+
+        let port = reserve_port().await;
+        let (relay, trigger) = start(
+            &format!("tcp-listen:127.0.0.1:{port},fork"),
+            &format!("tcp:{far_addr}"),
+            &[],
+        )
+        .await;
+
+        for payload in [&b"first connection"[..], b"second connection"] {
+            let mut client = connect_tcp(port).await;
+            client.write_all(payload).await.expect("client write");
+            client.shutdown().await.expect("client half close");
+
+            let mut echoed = Vec::new();
+            client
+                .read_to_end(&mut echoed)
+                .await
+                .expect("client read back");
+
+            assert_eq!(echoed, payload, "a forked connection altered the bytes");
+        }
+
+        // A listener has no end of stream of its own: the drain is what stops
+        // it accepting.
+        trigger.drain();
+        relay.await.expect("relay task").expect("relay run");
+    })
+    .await;
+}
+
+/// The connectionless datagram path, where the peer is learned by peeking at
+/// the first message rather than by accepting.
+#[tokio::test]
+async fn udp_round_trip() {
+    /// How long to wait for a reply before sending again.
+    const RETRY: Duration = Duration::from_millis(100);
+
+    run(async {
+        let far = UdpSocket::bind(LOOPBACK_ANY).await.expect("far socket");
+        let far_addr = far.local_addr().expect("far address");
+        let _far = spawn_udp_echo(far);
+
+        let port = reserve_udp_port().await;
+        let (relay, trigger) = start(
+            &format!("udp-listen:127.0.0.1:{port}"),
+            &format!("udp:{far_addr}"),
+            &[],
+        )
+        .await;
+
+        let client = UdpSocket::bind(LOOPBACK_ANY).await.expect("client socket");
+        let relay_addr = format!("127.0.0.1:{port}");
+        let mut buf = [0u8; 4096];
+
+        // A datagram sent before the relay has bound is dropped with no error
+        // anywhere, so this resends rather than waiting for a connect to
+        // succeed the way the stream cases do.
+        let n = timeout(READY, async {
+            loop {
+                client
+                    .send_to(PAYLOAD, &relay_addr)
+                    .await
+                    .expect("client send");
+
+                if let Ok(received) = timeout(RETRY, client.recv_from(&mut buf)).await {
+                    return received.expect("client recv").0;
+                }
+            }
+        })
+        .await
+        .expect("no datagram came back");
+
+        assert_eq!(&buf[..n], PAYLOAD, "the datagram changed on the way round");
+
+        trigger.drain();
+        relay.await.expect("relay task").expect("relay run");
+    })
+    .await;
+}
+
+/// A child process as the sink, which is the one endpoint whose far side is a
+/// pipe pair rather than a socket. `cat` ends when its stdin does, so this also
+/// covers end of stream reaching a child.
+#[tokio::test]
+async fn exec_child_round_trip() {
+    run(async {
+        let port = reserve_port().await;
+        let (relay, _trigger) =
+            start(&format!("tcp-listen:127.0.0.1:{port}"), "exec:cat", &[]).await;
+
+        let mut client = connect_tcp(port).await;
+        client.write_all(PAYLOAD).await.expect("client write");
+        client.shutdown().await.expect("client half close");
+
+        let mut echoed = Vec::new();
+        client
+            .read_to_end(&mut echoed)
+            .await
+            .expect("client read back");
+
+        assert_eq!(echoed, PAYLOAD, "the child did not see the payload");
+
+        relay.await.expect("relay task").expect("relay run");
+    })
+    .await;
+}
+
+/// Two blocking-backed endpoints and nothing declared, which is the one
+/// combination that never reaches `pump`: `dispatch` sends it to `run_sync` and
+/// the blocking pool instead.
+///
+/// One direction only. A `file:` source has nothing to be written back to, so
+/// the reverse direction does not exist and must not be run at all.
+#[tokio::test]
+async fn file_to_file_takes_the_sync_path() {
+    run(async {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let input = dir.path().join("in");
+        let output = dir.path().join("out");
+
+        std::fs::write(&input, PAYLOAD).expect("write the input file");
+
+        let (relay, _trigger) = start(
+            &format!("file:{}", input.display()),
+            &format!("file:{}", output.display()),
+            &[],
+        )
+        .await;
+
+        relay.await.expect("relay task").expect("relay run");
+
+        let copied = std::fs::read(&output).expect("read the output file");
+        assert_eq!(copied, PAYLOAD, "the synchronous copy altered the bytes");
     })
     .await;
 }
