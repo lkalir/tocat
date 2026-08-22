@@ -10,7 +10,13 @@ $ tocat unix-listen:/tmp/tocat.sock,fork,unlink,mode=660 tcp:localhost:8080
 | `fork`, `max-connections=N` | As [`tcp-listen`](tcp.md). `unix-listen` only                                                        |
 | `unlink`                    | Remove a stale socket before binding. `unix-listen` only                                             |
 | `mode=NNN`                  | Octal permissions applied after binding, explicitly, so umask does not mask them. `unix-listen` only |
+| `backlog=N`                 | Kernel accept queue depth. Default is 1024. `unix-listen` only                                       |
 | `name=TEXT`                 | Label for logs and dumps. Default `unix://path`                                                      |
+
+Plus `linger`, `recv-buffer` and `send-buffer` from the shared
+[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share).
+The TCP ones are refused here rather than ignored: a unix socket has no Nagle's
+algorithm, no keepalive and no address to hold in `TIME_WAIT`.
 
 `unlink` is about the stale path rather than the fresh one. Binding fails on an
 existing path whether or not anything is listening on it, so with `unlink` set

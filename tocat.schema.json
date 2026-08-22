@@ -375,6 +375,73 @@
             "[::1]:9000"
           ]
         },
+        "bind": {
+          "type": "string",
+          "description": "Local address to dial from. Has to be in the same address family as the peer, which is checked before the connect rather than reported as an error from bind.",
+          "examples": [
+            "127.0.0.1:0",
+            "0.0.0.0:5000"
+          ]
+        },
+        "reuseaddr": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bind an address still held in TIME_WAIT by a previous socket. Alias so-reuseaddr."
+        },
+        "nagle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Nagle's algorithm, which delays a small write in the hope of coalescing it with the next one. Set false for latency over throughput. socat spells this nodelay, with the opposite sense; that spelling is accepted."
+        },
+        "keepalive": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Probe an idle connection to find out whether the peer is still there. True uses the system's idle time; a duration sets it.",
+          "examples": [
+            true,
+            "30s"
+          ]
+        },
+        "keepalive-interval": {
+          "type": "string",
+          "description": "Between keepalive probes once the idle time has passed. Alias keepintvl.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "keepalive-probes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Unanswered probes before the connection is considered dead. Alias keepcnt."
+        },
+        "linger": {
+          "type": "string",
+          "description": "How long close waits for unsent data. Zero discards it and closes with an RST, which tests a peer's error handling and loses the tail of a stream. Alias so-linger.",
+          "examples": [
+            "0s",
+            "5s"
+          ]
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -424,6 +491,71 @@
           "default": 1024,
           "description": "Maximum number of concurrent connections. Only applies when fork is true."
         },
+        "backlog": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "How deep the kernel queues connections this relay has not accepted yet. Not max-connections, which bounds how many are served at once: a short backlog refuses a burst of clients whether or not the relay would have reached them."
+        },
+        "reuseaddr": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bind an address still held in TIME_WAIT by a previous socket. Alias so-reuseaddr."
+        },
+        "nagle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Nagle's algorithm, which delays a small write in the hope of coalescing it with the next one. Set false for latency over throughput. socat spells this nodelay, with the opposite sense; that spelling is accepted."
+        },
+        "keepalive": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Probe an idle connection to find out whether the peer is still there. True uses the system's idle time; a duration sets it.",
+          "examples": [
+            true,
+            "30s"
+          ]
+        },
+        "keepalive-interval": {
+          "type": "string",
+          "description": "Between keepalive probes once the idle time has passed. Alias keepintvl.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "keepalive-probes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Unanswered probes before the connection is considered dead. Alias keepcnt."
+        },
+        "linger": {
+          "type": "string",
+          "description": "How long close waits for unsent data. Zero discards it and closes with an RST, which tests a peer's error handling and loses the tail of a stream. Alias so-linger.",
+          "examples": [
+            "0s",
+            "5s"
+          ]
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -465,6 +597,25 @@
           "examples": [
             "0.0.0.0:0",
             "127.0.0.1:5000"
+          ]
+        },
+        "reuseaddr": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bind an address still held in TIME_WAIT by a previous socket. Alias so-reuseaddr."
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
           ]
         },
         "name": {
@@ -515,6 +666,25 @@
           "default": 1024,
           "description": "Maximum number of concurrent sessions. Only applies when fork is true. Datagrams from a new sender past the ceiling are dropped, and a session ends only when a stage stops it, so pair fork with a timeout plugin on both directions."
         },
+        "reuseaddr": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bind an address still held in TIME_WAIT by a previous socket. Alias so-reuseaddr."
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -546,6 +716,28 @@
           "examples": [
             "/tmp/tocat.sock",
             "/run/app/app.sock"
+          ]
+        },
+        "linger": {
+          "type": "string",
+          "description": "How long close waits for unsent data. Zero discards it and closes with an RST, which tests a peer's error handling and loses the tail of a stream. Alias so-linger.",
+          "examples": [
+            "0s",
+            "5s"
+          ]
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
           ]
         },
         "name": {
@@ -607,6 +799,34 @@
           "minimum": 1,
           "default": 1024,
           "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "backlog": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "How deep the kernel queues connections this relay has not accepted yet. Not max-connections, which bounds how many are served at once: a short backlog refuses a burst of clients whether or not the relay would have reached them."
+        },
+        "linger": {
+          "type": "string",
+          "description": "How long close waits for unsent data. Zero discards it and closes with an RST, which tests a peer's error handling and loses the tail of a stream. Alias so-linger.",
+          "examples": [
+            "0s",
+            "5s"
+          ]
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
+          ]
         },
         "name": {
           "type": "string",

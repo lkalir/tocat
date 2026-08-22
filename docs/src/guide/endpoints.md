@@ -62,6 +62,43 @@ what the endpoint carries rather than how it connects:
 end of stream like `tcp-listen`, and is still a datagram endpoint, because a
 message it delivers is one the peer sent whole.
 
+## Socket options, which the socket schemes share
+
+`tcp`, `tcp-listen`, `unix`, `unix-listen`, `udp` and `udp-listen` take the
+options below, as far as their kind of socket has them. An option a scheme
+cannot honour is an error rather than a no-op, so `unix:/tmp/s,nagle=false` is
+refused: Nagle's algorithm is a TCP thing.
+
+| Option                 | Where                   | Description                                                                    |
+| ---------------------- | ----------------------- | ------------------------------------------------------------------------------ |
+| `reuseaddr`            | tcp, udp                | Bind an address still held in `TIME_WAIT`                                      |
+| `nagle=false`          | tcp                     | Send small writes immediately, trading throughput for latency                  |
+| `keepalive[=DURATION]` | tcp                     | Probe an idle connection; bare uses the system's idle time, a duration sets it |
+| `keepalive-interval=`  | tcp                     | Between probes once the idle time has passed                                   |
+| `keepalive-probes=N`   | tcp                     | Unanswered probes before the connection is dead                                |
+| `linger=DURATION`      | tcp, unix               | How long `close` waits for unsent data. `linger=0s` closes with an RST instead |
+| `recv-buffer=SIZE`     | all                     | Kernel receive buffer for this socket                                          |
+| `send-buffer=SIZE`     | all                     | Kernel send buffer for this socket                                             |
+| `backlog=N`            | tcp-listen, unix-listen | How deep the kernel queues connections not yet accepted                        |
+
+socat's spellings are accepted where they differ: `nodelay` (which is `nagle`
+inverted), `rcvbuf`, `sndbuf`, `keepintvl`, `keepcnt`, `so-reuseaddr` and
+`so-linger`.
+
+```console
+$ tocat 'tcp-listen:9000,fork,backlog=64,nagle=false' 'tcp:backend:80,keepalive=30s'
+```
+
+**`recv-buffer` is not `buffer-size`.** The kernel buffer is how much the
+operating system will hold for this socket; [`buffer-size`](buffers.md) is how
+much tocat copies at a time and, on a datagram endpoint, the largest message it
+can carry. Sizing the wrong one is the usual mistake.
+
+**On a listener the options belong to each accepted connection**, not to the
+listening socket, so under `fork` every client gets them. `reuseaddr` and the
+buffer sizes are the exceptions: they have to be set before the bind, so they
+apply to the listening socket itself.
+
 ## `name`, which every scheme takes
 
 Every scheme accepts `name=TEXT`, which replaces the label the endpoint is known

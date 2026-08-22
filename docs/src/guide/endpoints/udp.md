@@ -19,6 +19,14 @@ $ tocat udp-listen:5353,fork 'timeout:both,timeout=30s' udp:8.8.8.8:53
 | `max-connections=N` | Sessions served at once under `fork`. Default 1024. Datagrams from a new sender past the ceiling are dropped   |
 | `name=TEXT`         | Label for logs and dumps. Default `udp://addr`                                                                 |
 
+Plus `reuseaddr`, `recv-buffer` and `send-buffer` from the shared
+[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share).
+`linger` and the TCP options are refused: there is no connection to close and no
+Nagle's algorithm to turn off.
+
+A `bind=` address is now resolved before the socket is created, so a name with
+several addresses takes the first.
+
 `udp:` resolves the peer before binding, so that the local socket lands in the
 same address family. Without `fork`, `udp-listen:` peeks the first datagram to
 learn who the peer is and then connects to it, leaving that datagram queued for
