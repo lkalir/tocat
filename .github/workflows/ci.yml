@@ -61,7 +61,7 @@ jobs:
           purge-primary-key: never
 
       - name: Build the dev shell
-        run: nix develop --command bash -c 'dirname "$(command -v cargo)" >> "$GITHUB_PATH"'
+        run: nix develop .#ci --command bash -c 'dirname "$(command -v cargo)" >> "$GITHUB_PATH"'
 
       # rust-cache already keys on Cargo.lock; the extra key adds flake.lock, so
       # a toolchain bump invalidates compiled dependencies the same way a
@@ -92,19 +92,19 @@ jobs:
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: nix develop --command bash -euo pipefail -c 'printf "%s\n" "$PR_TITLE" | commitlint --verbose'
+        run: nix develop .#ci --command bash -euo pipefail -c 'printf "%s\n" "$PR_TITLE" | commitlint --verbose'
 
       - name: Check Rust formatting
         if: ${{ !cancelled() }}
-        run: nix develop --command cargo-nightly fmt --all --check
+        run: nix develop .#ci --command cargo fmt --all --check
 
       - name: Check Markdown and JSON formatting
         if: ${{ !cancelled() }}
-        run: nix develop --command dprint check
+        run: nix develop .#ci --command dprint check
 
       - name: Check lints
         if: ${{ !cancelled() }}
-        run: nix develop --command cargo clippy --workspace --locked --all-targets -- -D warnings
+        run: nix develop .#ci --command cargo clippy --workspace --locked --all-targets --profile ci -- -D warnings
 
       # The plugin set is a feature set, and README.md tells people to subtract
       # from it. Only the default build is compiled anywhere else in this job,
@@ -112,15 +112,15 @@ jobs:
       - name: Check documented feature combinations
         if: ${{ !cancelled() }}
         run: |
-          nix develop --command bash -euo pipefail -c '
-            cargo check -p tocat --locked --no-default-features
-            cargo check -p tocat --locked --no-default-features --features tee
-            cargo check -p tocat --locked --no-default-features --features all-plugins-no-wasm
+          nix develop .#ci --command bash -euo pipefail -c '
+            cargo check -p tocat --locked --profile ci --no-default-features
+            cargo check -p tocat --locked --profile ci --no-default-features --features tee
+            cargo check -p tocat --locked --profile ci --no-default-features --features all-plugins-no-wasm
           '
 
       - name: Build the book
         if: ${{ !cancelled() }}
-        run: nix develop --command mdbook build docs
+        run: nix develop .#ci --command mdbook build docs
 
       - name: Package the book for Pages
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -130,7 +130,7 @@ jobs:
 
       - name: Run tests
         if: ${{ !cancelled() }}
-        run: nix develop --command cargo nextest run --workspace --locked --profile ci
+        run: nix develop .#ci --command cargo nextest run --workspace --locked --profile ci --cargo-profile ci
 
       - name: Upload test results
         if: ${{ !cancelled() }}

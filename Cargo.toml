@@ -35,3 +35,4 @@ default-features = false
 [profile.ci]
 inherits = "dev"
 opt-level = 1
+debug = "line-tables-only"

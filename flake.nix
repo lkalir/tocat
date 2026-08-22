@@ -48,6 +48,8 @@
           }
         );
 
+        nightlyRustfmt = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.rustfmt);
+
         # Symlink wrapper providing cargo-nightly and rustc-nightly,
         # while ensuring cargo-nightly uses the nightly rustfmt.
         rustNightlyWrapped = pkgs.symlinkJoin {
@@ -133,67 +135,84 @@
             gnumake
           ]
           ++ lib.optionals stdenv.isDarwin [ libiconv ];
+
+        checkTools = with pkgs; [
+          cargo-nextest
+          mdbook
+          commitlint
+          dprint
+        ];
+
+        devTools = with pkgs; [
+          cargo-watch
+          cargo-edit
+          cargo-audit
+          cargo-deny
+          bacon
+          release-plz
+          cargo-semver-checks
+          git-cliff
+
+          tokio-console
+
+          curl
+          websocat
+          tcpdump
+          socat
+          netcat-gnu
+
+          tombi
+          pv
+          hyperfine
+          binaryen
+          wasm-tools
+          gh
+
+          python3Packages.grip
+          marksman
+        ];
+
+        mkProjectShell =
+          {
+            rustPackages,
+            packages,
+            extraEnv ? { },
+          }:
+          pkgs.mkShell (
+            extraEnv
+            // {
+              hardeningDisable = [ "all" ];
+              nativeBuildInputs = rustPackages ++ nativeDeps;
+              buildInputs = libDeps;
+
+              inherit packages;
+
+              RUSTFLAGS = "--cfg tokio_unstable";
+
+              RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+              RUST_BACKTRACE = "1";
+
+              CLANG = "clang-unwrapped";
+              CLANGXX = "clang++-unwrapped";
+            }
+          );
       in
       {
-        devShells.default = pkgs.mkShell {
-          hardeningDisable = [ "all" ];
-          nativeBuildInputs = [
+        devShells.default = mkProjectShell {
+          rustPackages = [
             rustToolchain
             rustNightlyWrapped
-          ]
-          ++ nativeDeps;
-          buildInputs = libDeps;
-
-          packages = with pkgs; [
-            # cargo ecosystem
-            cargo-nextest
-            cargo-watch
-            cargo-edit
-            cargo-audit
-            cargo-deny
-            bacon
-            mdbook
-            release-plz
-            cargo-semver-checks
-            git-cliff
-
-            # async runtime introspection
-            tokio-console
-
-            # poking at sockets
-            curl
-            websocat
-            netcat-gnu
-            socat
-            tcpdump
-
-            # other utils
-            tombi
-            pv
-            hyperfine
-            binaryen
-            wasm-tools
-            commitlint
-            gh
-
-            # markdown
-            python3Packages.grip
-            marksman
-            dprint
           ];
-
-          # tokio-console requires this cfg across the whole build graph.
-          RUSTFLAGS = "--cfg tokio_unstable";
-
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-          RUST_BACKTRACE = "1";
-
-          CLANG = "clang-unwrapped";
-          CLANGXX = "clang++-unwrapped";
-
-          shellHook = ''
+          packages = checkTools ++ devTools;
+          extraEnv.shellHook = ''
             git config --local core.hooksPath .githooks
           '';
+        };
+
+        devShells.ci = mkProjectShell {
+          rustPackages = [ rustToolchain ];
+          packages = checkTools;
+          extraEnv.RUSTFMT = "${nightlyRustfmt}/bin/rustfmt";
         };
 
         packages.default = self.packages.${system}.tocat;
