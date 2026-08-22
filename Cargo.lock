@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "tocat"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2460,7 +2460,7 @@ dependencies = [
 
 [[package]]
 name = "tocat-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2469,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "tocat-plugins"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aead 0.6.1",
  "aes",
@@ -2516,21 +2516,21 @@ dependencies = [
 
 [[package]]
 name = "tocat-wasm-abi"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cbindgen",
 ]
 
 [[package]]
 name = "tocat-wasm-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "tocat-wasm-abi",
 ]
 
 [[package]]
 name = "tocat-wasm-shell"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
