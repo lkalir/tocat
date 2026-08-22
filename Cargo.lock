@@ -2447,6 +2447,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "tempfile",
  "tocat-api",
  "tocat-plugins",
  "tokio",

@@ -10,6 +10,14 @@ license.workspace = true
 keywords.workspace = true
 categories = ["command-line-utilities", "network-programming"]
 
+[lib]
+name = "tocat"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tocat"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -44,6 +52,9 @@ toml = "1.1.4"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [features]
 default = ["all-plugins", "schema"]

@@ -19,6 +19,22 @@ use tracing::{info, warn};
 #[derive(Clone)]
 pub struct Shutdown(watch::Receiver<bool>);
 
+/// The sending half of a [`Shutdown`], for a caller that decides on its own
+/// when to drain.
+///
+/// [`install`] holds one inside its signal task. Tests hold one directly,
+/// which is the only way to reach the drain path without sending the process a
+/// signal.
+pub struct Trigger(watch::Sender<bool>);
+
+impl Trigger {
+    /// Ask every holder of the paired [`Shutdown`] to drain, exactly as the
+    /// first signal does.
+    pub fn drain(&self) {
+        let _ = self.0.send(true);
+    }
+}
+
 impl Shutdown {
     pub async fn recv(&mut self) {
         if *self.0.borrow() {
@@ -35,20 +51,32 @@ impl Shutdown {
     }
 }
 
-pub fn install() -> Shutdown {
+/// A [`Shutdown`] and its [`Trigger`], with no signal handler attached.
+///
+/// The trigger has to outlive every [`Shutdown`] clone. Dropping the last
+/// sender closes the channel, [`Shutdown::recv`] returns when that happens, and
+/// a closed channel is therefore indistinguishable from a signal: a caller that
+/// drops the trigger early drains the relay it just started.
+pub fn channel() -> (Trigger, Shutdown) {
     let (tx, rx) = watch::channel(false);
+
+    (Trigger(tx), Shutdown(rx))
+}
+
+pub fn install() -> Shutdown {
+    let (trigger, rx) = channel();
 
     tokio::spawn(async move {
         wait_for_signal().await;
         info!("shutdown requested, draining connections (signal again to exit now)");
-        let _ = tx.send(true);
+        trigger.drain();
 
         wait_for_signal().await;
         warn!("second signal, exiting immediately");
         std::process::exit(130);
     });
 
-    Shutdown(rx)
+    rx
 }
 
 #[cfg(unix)]
