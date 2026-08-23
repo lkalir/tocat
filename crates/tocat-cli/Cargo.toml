@@ -29,8 +29,16 @@ rustix = {
   version = "1.1.4",
   features = ["fs", "net", "pipe", "pty", "termios"]
 }
+rustls = {
+  version = "0.23.43",
+  default-features = false,
+  features = ["aws-lc-rs", "logging", "std", "tls12"]
+}
+rustls-native-certs = "0.8.4"
+rustls-pemfile = "2.2.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10.9"
 tocat-api = { workspace = true }
 tocat-plugins = { workspace = true }
 tokio = {
@@ -49,6 +57,11 @@ tokio = {
     "time"
   ]
 }
+tokio-rustls = {
+  version = "0.26.4",
+  default-features = false,
+  features = ["aws-lc-rs", "logging", "tls12"],
+}
 tokio-seqpacket = "0.9.1"
 tokio-util = { version = "0.7.19", features = ["rt"] }
 toml = "1.1.4"
@@ -57,6 +70,9 @@ tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 
 [dev-dependencies]
+# The tls tests generate a certificate rather than carrying a fixture with an
+# expiry date in it.
+rcgen = "0.14.9"
 tempfile = "3.27.0"
 
 [features]

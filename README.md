@@ -29,8 +29,8 @@ socat. The currently supported sources and sinks are
 - [x] system
 - [x] tcp
 - [x] tcp-listen
-- [ ] tls
-- [ ] tls-listen
+- [x] tls
+- [x] tls-listen
 - [x] tty
 - [x] udp
 - [x] udp-listen

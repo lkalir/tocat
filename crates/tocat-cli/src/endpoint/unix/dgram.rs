@@ -436,18 +436,18 @@ fn connect_addr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSpec;
+    use crate::endpoint::{EndpointSpec, Transport};
 
     fn dial(s: &str) -> UnixDgram {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::UnixDgram(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::UnixDgram(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }
 
     fn listen(s: &str) -> UnixDgramListen {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::UnixDgramListen(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::UnixDgramListen(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }

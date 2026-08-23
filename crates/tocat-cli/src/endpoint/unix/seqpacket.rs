@@ -293,18 +293,18 @@ impl SeqpacketConn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSpec;
+    use crate::endpoint::{EndpointSpec, Transport};
 
     fn dial(s: &str) -> UnixSeqpacket {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::UnixSeqpacket(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::UnixSeqpacket(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }
 
     fn listen(s: &str) -> UnixSeqpacketListen {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::UnixSeqpacketListen(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::UnixSeqpacketListen(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }

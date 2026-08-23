@@ -346,6 +346,77 @@
         "-"
       ]
     },
+    "layer": {
+      "title": "layer",
+      "description": "A handshake over a byte stream. Only stream transports can carry one: a layer over udp or a datagram socket is refused before anything is opened.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/tls-layer"
+        }
+      ]
+    },
+    "tls-layer": {
+      "title": "tls",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "tls"
+          ]
+        },
+        "cafile": {
+          "type": "string",
+          "description": "Trust anchors from a PEM file instead of the platform's store. Alias ca."
+        },
+        "pin": {
+          "type": "string",
+          "description": "The peer leaf certificate's SHA-256 fingerprint, hex, with or without a sha256: prefix. Checked instead of the chain, not as well as it. The answer to reach for before verify=none when talking to an appliance with a self-signed certificate: a fingerprint is a real check.",
+          "examples": [
+            "sha256:2f8a...",
+            "2f:8a:..."
+          ]
+        },
+        "verify": {
+          "type": "string",
+          "enum": [
+            "peer",
+            "none"
+          ],
+          "default": "peer",
+          "description": "none accepts any certificate, which leaves the connection encrypted and the peer unauthenticated. Spelled as a word rather than as a number so that a config file carrying it reads as an admission; every run using it logs a warning."
+        },
+        "servername": {
+          "type": "string",
+          "description": "The name to send in SNI and to check the certificate against. Defaults to the host the transport dialled. Alias sni."
+        },
+        "alpn": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Protocols to offer, in preference order.",
+          "examples": [
+            [
+              "h2",
+              "http/1.1"
+            ]
+          ]
+        },
+        "cert": {
+          "type": "string",
+          "description": "The certificate chain to present, PEM. Required to accept."
+        },
+        "keyfile": {
+          "type": "string",
+          "description": "The private key, PEM. Required to accept. Alias key."
+        }
+      }
+    },
     "tcp-endpoint": {
       "title": "tcp",
       "type": "object",
@@ -498,6 +569,13 @@
             "1s"
           ]
         },
+        "layers": {
+          "type": "array",
+          "description": "Handshakes stacked over this transport, bottom first. The command line spells a common stack as one scheme, so tls:host:443 is this transport with one tls layer, and --dump-config prints the composed form.",
+          "items": {
+            "$ref": "#/$defs/layer"
+          }
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -611,6 +689,13 @@
           "examples": [
             "256KiB"
           ]
+        },
+        "layers": {
+          "type": "array",
+          "description": "Handshakes stacked over this transport, bottom first. The command line spells a common stack as one scheme, so tls:host:443 is this transport with one tls layer, and --dump-config prints the composed form.",
+          "items": {
+            "$ref": "#/$defs/layer"
+          }
         },
         "name": {
           "type": "string",
@@ -914,6 +999,13 @@
             "1s"
           ]
         },
+        "layers": {
+          "type": "array",
+          "description": "Handshakes stacked over this transport, bottom first. The command line spells a common stack as one scheme, so tls:host:443 is this transport with one tls layer, and --dump-config prints the composed form.",
+          "items": {
+            "$ref": "#/$defs/layer"
+          }
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -1001,6 +1093,13 @@
           "examples": [
             "256KiB"
           ]
+        },
+        "layers": {
+          "type": "array",
+          "description": "Handshakes stacked over this transport, bottom first. The command line spells a common stack as one scheme, so tls:host:443 is this transport with one tls layer, and --dump-config prints the composed form.",
+          "items": {
+            "$ref": "#/$defs/layer"
+          }
         },
         "name": {
           "type": "string",

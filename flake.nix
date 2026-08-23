@@ -167,6 +167,7 @@
           binaryen
           wasm-tools
           gh
+          mkcert
 
           python3Packages.grip
           marksman

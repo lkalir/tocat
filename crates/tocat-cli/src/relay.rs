@@ -46,7 +46,7 @@ use crate::{
     buffer::Buffer,
     endpoint::{
         Demux, Direction, EndpointSpec, EndpointStream, PathGuard, ReadHalf, SocketOptions,
-        SyncRead, SyncWrite, WriteHalf,
+        SyncRead, SyncWrite, Transport, WriteHalf,
     },
     host::{ChannelPlan, Channels},
     progress::{self, Counter, Meter},
@@ -73,18 +73,18 @@ impl Listener {
         buffer: usize,
         shutdown: Shutdown,
     ) -> anyhow::Result<(Self, Option<PathGuard>)> {
-        match spec {
-            EndpointSpec::TcpListen(e) => {
+        match &spec.transport {
+            Transport::TcpListen(e) => {
                 let l = e.bind().await?;
                 info!(local = %l.local_addr()?, "listening");
                 Ok((Listener::Tcp(l, e.options.clone()), None))
             }
-            EndpointSpec::UnixListen(e) => {
+            Transport::UnixListen(e) => {
                 let l = e.bind().await?;
                 info!(path = %e.path, "listening");
                 Ok((Listener::Unix(l, e.options.clone()), e.path.guard()))
             }
-            EndpointSpec::UnixSeqpacketListen(e) => {
+            Transport::UnixSeqpacketListen(e) => {
                 let l = e.bind().await?;
                 info!(path = %e.path, "listening");
                 Ok((Listener::Seqpacket(l, e.options.clone()), e.path.guard()))
@@ -92,11 +92,11 @@ impl Listener {
             // The receive loops need the copy buffer for the same reason the
             // pump does: one receive is one message, and anything longer than
             // the buffer is truncated by the kernel.
-            EndpointSpec::UnixDgramListen(e) => Ok((
+            Transport::UnixDgramListen(e) => Ok((
                 Listener::Datagram(e.demux(buffer, shutdown).await?),
                 e.path.guard(),
             )),
-            EndpointSpec::UdpListen(e) => {
+            Transport::UdpListen(e) => {
                 Ok((Listener::Datagram(e.demux(buffer, shutdown).await?), None))
             }
             _ => anyhow::bail!("fork is only supported on listening endpoints"),
@@ -288,6 +288,9 @@ impl Relay {
                 ));
             }
         }
+
+        source.check()?;
+        sink.check()?;
 
         if !faults.is_empty() {
             anyhow::bail!("{}", faults.join("\n"));
@@ -730,7 +733,9 @@ impl Relay {
                     let _permit = permit;
                     match this.handle_client(stream, &peer, peer_dir, shutdown).await {
                         Ok(()) => info!("closed cleanly"),
-                        Err(err) => error!(error = ?err, "terminated with error"),
+                        // TODO: Reconsider keeping this error! instead of warn! and suppressing the
+                        // backtrace here. Or maybe make this more intelligent
+                        Err(err) => error!(error = format!("{err:#}"), "terminated with error"),
                     }
                 }
                 .instrument(span),
@@ -767,6 +772,9 @@ impl Relay {
         let dialled = dialled_spec.connect_shared(peer_dir, self.buffer).await?;
         let peer_spec = dialled_spec.as_ref();
         let _guard = dialled.guard;
+
+        // The listening side skipped `connect`, so its layers have not run.
+        let accepted = listen.wrap(accepted).await?;
 
         let (src_stream, sink_stream, src_spec, sink_spec) = match peer_dir {
             Direction::Source => (dialled.stream, accepted, peer_spec, listen),

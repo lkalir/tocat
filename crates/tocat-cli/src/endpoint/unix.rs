@@ -438,18 +438,18 @@ impl UnixListen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSpec;
+    use crate::endpoint::{EndpointSpec, Transport};
 
     fn dial(s: &str) -> Unix {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::Unix(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::Unix(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }
 
     fn listen(s: &str) -> UnixListen {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::UnixListen(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::UnixListen(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }
@@ -495,8 +495,8 @@ mod tests {
         let spec: EndpointSpec =
             toml::from_str("type = \"unix-listen\"\npath = \"@tocat\"").expect("deserialises");
 
-        match spec {
-            EndpointSpec::UnixListen(e) => assert!(e.path.is_abstract()),
+        match spec.transport {
+            Transport::UnixListen(e) => assert!(e.path.is_abstract()),
             other => panic!("wrong variant: {other:?}"),
         }
     }

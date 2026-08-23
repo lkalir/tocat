@@ -426,10 +426,10 @@ impl PtyExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSpec;
+    use crate::endpoint::{EndpointSpec, Transport};
 
-    fn spec(s: &str) -> EndpointSpec {
-        s.parse().expect("parses")
+    fn spec(s: &str) -> Transport {
+        s.parse::<EndpointSpec>().expect("parses").transport
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
     /// Raw on and echo off, because a relay is not a terminal emulator.
     #[test]
     fn the_defaults_are_transparent() {
-        let EndpointSpec::PtyExec(e) = spec("pty-exec:cat") else {
+        let Transport::PtyExec(e) = spec("pty-exec:cat") else {
             panic!("wrong variant");
         };
 
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn the_body_is_the_link_path() {
-        let EndpointSpec::Pty(e) = spec("pty:/tmp/ttyfake") else {
+        let Transport::Pty(e) = spec("pty:/tmp/ttyfake") else {
             panic!("wrong variant");
         };
 
@@ -467,13 +467,13 @@ mod tests {
     /// Splitting a shell command line would break every quote in it.
     #[test]
     fn shell_keeps_the_command_line_whole() {
-        let EndpointSpec::PtyExec(e) = spec("pty-exec:echo 'a b',shell") else {
+        let Transport::PtyExec(e) = spec("pty-exec:echo 'a b',shell") else {
             panic!("wrong variant");
         };
 
         assert_eq!(e.argv, vec!["echo 'a b'".to_string()]);
 
-        let EndpointSpec::PtyExec(e) = spec("pty-exec:echo a b") else {
+        let Transport::PtyExec(e) = spec("pty-exec:echo a b") else {
             panic!("wrong variant");
         };
 

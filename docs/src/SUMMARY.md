@@ -14,6 +14,7 @@
   - [stdio](guide/endpoints/stdio.md)
   - [tcp and tcp-listen](guide/endpoints/tcp.md)
   - [tty](guide/endpoints/tty.md)
+  - [tls and tls-listen](guide/endpoints/tls.md)
   - [udp and udp-listen](guide/endpoints/udp.md)
   - [unix and unix-listen](guide/endpoints/unix.md)
   - [unix-dgram and unix-dgram-listen](guide/endpoints/unix-dgram.md)

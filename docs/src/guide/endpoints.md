@@ -62,6 +62,38 @@ what the endpoint carries rather than how it connects:
 end of stream like `tcp-listen`, and is still a datagram endpoint, because a
 message it delivers is one the peer sent whole.
 
+## Layers, which stack over a transport
+
+An endpoint is a transport and, optionally, handshakes stacked over it. A
+transport opens a connection; a layer takes one and returns another.
+[`tls`](endpoints/tls.md) is the first of them, and proxy CONNECT, SOCKS and
+WebSocket are the same shape.
+
+The command line spells a common stack as a single scheme, so `tls:host:443` is
+a TCP transport with one TLS layer. A config file can write either that or the
+composed form, and `--dump-config` prints the composed one:
+
+```toml
+[sink]
+type = "tcp"
+addr = "backend:443"
+
+[[sink.layers]]
+type = "tls"
+cafile = "/etc/ca.pem"
+```
+
+Options on a sugared scheme go to whichever of the two wants them, with the
+layer asked first. There is no ambiguity today, since the only key both could
+take is `name=`, which layers refuse: an endpoint has one name, not one per
+level.
+
+**A layer decides what the endpoint carries.** TLS fuses message boundaries, so
+an endpoint with a TLS layer is a byte stream whatever the transport underneath
+it was. That is why only the stream transports accept layers at all, and why a
+layer over `udp:` is refused before anything is opened rather than discovered
+later.
+
 ## Socket options, which the socket schemes share
 
 `tcp`, `tcp-listen`, `unix`, `unix-listen`, `udp` and `udp-listen` take the

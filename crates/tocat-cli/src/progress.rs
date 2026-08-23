@@ -51,7 +51,7 @@ use tokio::{
 };
 use tracing_subscriber::fmt::MakeWriter;
 
-use crate::endpoint::{EndpointSpec, ReadHalf};
+use crate::endpoint::{EndpointSpec, ReadHalf, Transport};
 
 /// How often the line is redrawn.
 const REDRAW: Duration = Duration::from_millis(100);
@@ -308,8 +308,8 @@ fn expected_size(source: &EndpointSpec, sink: &EndpointSpec) -> Option<u64> {
         return None;
     }
 
-    match source {
-        EndpointSpec::File(e) => {
+    match &source.transport {
+        Transport::File(e) => {
             let metadata = std::fs::metadata(&e.path).ok()?;
             metadata.is_file().then_some(metadata.len())
         }

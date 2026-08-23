@@ -19,7 +19,7 @@ use tocat_api::normalize;
 use crate::{
     config::ByteSize,
     endpoint::{
-        EndpointSpec,
+        EndpointSpec, LayerSpec, Tls, Transport,
         chan::Chan,
         exec::{Exec, System},
         file::File,
@@ -37,6 +37,26 @@ use crate::{
         },
     },
 };
+
+/// Split one option list between a layer and the transport under it.
+///
+/// The layer is asked first. The only key both could want is `name`, which a
+/// layer refuses so that an endpoint has one name rather than one per lefel, so
+/// asking in this order cannot take an option from the transport.
+fn split_tls<'a>(
+    opts: impl Iterator<Item = Opt<'a>>,
+) -> Result<(Vec<Opt<'a>>, Tls), ParseEndpointError> {
+    let mut tls = Tls::default();
+    let mut rest = Vec::new();
+
+    for opt in opts {
+        if !tls.option(&opt)? {
+            rest.push(opt);
+        }
+    }
+
+    Ok((rest, tls))
+}
 
 #[derive(Debug, PartialEq)]
 pub enum ParseEndpointError {
@@ -187,7 +207,7 @@ impl std::str::FromStr for EndpointSpec {
         }
 
         if s == "-" {
-            return Ok(Self::Stdio(Stdio { name: None }));
+            return Ok(Transport::Stdio(Stdio { name: None }).into());
         }
 
         let mut parts = s.split(',');
@@ -196,41 +216,59 @@ impl std::str::FromStr for EndpointSpec {
 
         let (scheme, body) = target.split_once(':').unwrap_or((target, ""));
 
-        match normalize(scheme).as_str() {
-            "chan" | "channel" | "queue" => Chan::parse(body, opts).map(Self::Chan),
-            "exec" => Exec::parse(body, opts).map(Self::Exec),
-            "file" | "open" => File::parse(body, opts).map(Self::File),
-            "pipe" | "fifo" => Pipe::parse(body, opts).map(Self::Pipe),
-            "pty" => Pty::parse(body, opts).map(Self::Pty),
-            "ptyexec" => PtyExec::parse(body, opts).map(Self::PtyExec),
-            "stdio" => Stdio::parse(body, opts).map(Self::Stdio),
-            "system" => System::parse(body, opts).map(Self::System),
-            "tcp" | "tcpconnect" | "connect" => Tcp::parse(body, opts).map(Self::Tcp),
-            "tcplisten" | "listen" => TcpListen::parse(body, opts).map(Self::TcpListen),
-            "tty" | "serial" => Tty::parse(body, opts).map(Self::Tty),
-            "udp" | "udpconnect" => Udp::parse(body, opts).map(Self::Udp),
-            "udplisten" => UdpListen::parse(body, opts).map(Self::UdpListen),
+        // A sugared scheme is a transport and a stack in one word, so the layer
+        // is built here and the transport gets what is left.
+        let mut layers = Vec::new();
+
+        let transport = match normalize(scheme).as_str() {
+            "chan" | "channel" | "queue" => Chan::parse(body, opts).map(Transport::Chan),
+            "exec" => Exec::parse(body, opts).map(Transport::Exec),
+            "file" | "open" => File::parse(body, opts).map(Transport::File),
+            "pipe" | "fifo" => Pipe::parse(body, opts).map(Transport::Pipe),
+            "pty" => Pty::parse(body, opts).map(Transport::Pty),
+            "ptyexec" => PtyExec::parse(body, opts).map(Transport::PtyExec),
+            "stdio" => Stdio::parse(body, opts).map(Transport::Stdio),
+            "system" => System::parse(body, opts).map(Transport::System),
+            "tcp" | "tcpconnect" | "connect" => Tcp::parse(body, opts).map(Transport::Tcp),
+            "tcplisten" | "listen" => TcpListen::parse(body, opts).map(Transport::TcpListen),
+            "tty" | "serial" => Tty::parse(body, opts).map(Transport::Tty),
+            "tls" | "ssl" | "openssl" | "tlsconnect" | "sslconnect" | "opensslconnect" => {
+                let (rest, tls) = split_tls(opts)?;
+                layers.push(LayerSpec::Tls(tls));
+
+                Tcp::parse(body, rest.into_iter()).map(Transport::Tcp)
+            }
+            "tlslisten" | "ssllisten" | "openssllisten" => {
+                let (rest, tls) = split_tls(opts)?;
+                layers.push(LayerSpec::Tls(tls));
+
+                TcpListen::parse(body, rest.into_iter()).map(Transport::TcpListen)
+            }
+            "udp" | "udpconnect" => Udp::parse(body, opts).map(Transport::Udp),
+            "udplisten" => UdpListen::parse(body, opts).map(Transport::UdpListen),
             "unix" | "unixconnect" | "uds" | "udsconnect" => {
-                Unix::parse(body, opts).map(Self::Unix)
+                Unix::parse(body, opts).map(Transport::Unix)
             }
             "unixdgram" | "unixdatagram" | "udsdgram" | "udsdatagram" => {
-                UnixDgram::parse(body, opts).map(Self::UnixDgram)
+                UnixDgram::parse(body, opts).map(Transport::UnixDgram)
             }
             "unixdgramlisten" | "unixdatagramlisten" | "udsdgramlisten" | "udsdatagramlisten" => {
-                UnixDgramListen::parse(body, opts).map(Self::UnixDgramListen)
+                UnixDgramListen::parse(body, opts).map(Transport::UnixDgramListen)
             }
-            "unixlisten" | "udslisten" => UnixListen::parse(body, opts).map(Self::UnixListen),
+            "unixlisten" | "udslisten" => UnixListen::parse(body, opts).map(Transport::UnixListen),
             "unixseqpacket" | "unixseqpkt" | "udsseqpacket" | "udsseqpkt" | "seqpacket"
-            | "seqpkt" => UnixSeqpacket::parse(body, opts).map(Self::UnixSeqpacket),
+            | "seqpkt" => UnixSeqpacket::parse(body, opts).map(Transport::UnixSeqpacket),
             "unixseqpacketlisten"
             | "unixseqpktlisten"
             | "udsseqpacketlisten"
             | "udsseqpktlisten"
             | "seqpacketlisten"
             | "seqpktlisten" => {
-                UnixSeqpacketListen::parse(body, opts).map(Self::UnixSeqpacketListen)
+                UnixSeqpacketListen::parse(body, opts).map(Transport::UnixSeqpacketListen)
             }
             other => Err(Self::Err::UnknownScheme(other.to_owned())),
-        }
+        }?;
+
+        Ok(EndpointSpec { transport, layers })
     }
 }

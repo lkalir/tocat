@@ -395,11 +395,11 @@ impl Tty {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSpec;
+    use crate::endpoint::{EndpointSpec, Transport};
 
     fn tty(s: &str) -> Tty {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::Tty(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::Tty(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }

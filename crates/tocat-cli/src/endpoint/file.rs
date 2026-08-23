@@ -288,11 +288,11 @@ impl File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSpec;
+    use crate::endpoint::{EndpointSpec, Transport};
 
     fn file(s: &str) -> File {
-        match s.parse::<EndpointSpec>().expect("parses") {
-            EndpointSpec::File(e) => e,
+        match s.parse::<EndpointSpec>().expect("parses").transport {
+            Transport::File(e) => e,
             other => panic!("wrong variant: {other:?}"),
         }
     }

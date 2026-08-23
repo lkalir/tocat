@@ -51,6 +51,7 @@ mod chan;
 mod datagram;
 mod exec;
 mod file;
+mod layer;
 mod parse;
 mod pipe;
 mod pty;
@@ -74,6 +75,7 @@ pub use self::{
     datagram::Demux,
     exec::{Exec, System},
     file::File,
+    layer::{LayerSpec, Tls, Verify},
     parse::ParseEndpointError,
     pipe::Pipe,
     pty::{Pty, PtyExec},
@@ -141,7 +143,242 @@ pub enum Direction {
     Sink,
 }
 
-/// One endpoint, parsed.
+/// An endpoint: a transport, and later the handshakes stacked over it.
+///
+/// A newtype for now. It exists because reconnection belongs to the endpoint
+/// rather than to the transport: [`Reconnecting`] holds one of these and
+/// reopens it, and once layers land a redial has to redo the handshake as well
+/// as the connect. Leaving the retry loop on the transport would put it below
+/// the thing it has to rebuild.
+///
+/// # Things that are easy to lose in a refactor
+///
+/// The predicates here answer for the **top of the stack**, not the transport.
+/// A layer decides what the endpoint carries, and an endpoint that answers for
+/// its transport instead reports the wrong shape, which is how a datagram relay
+/// silently becomes a stream one.
+///
+/// `flatten` keeps the transport's table where it was, so a config file that
+/// names no layers is spelled exactly as before.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EndpointSpec {
+    #[serde(flatten)]
+    pub transport: Transport,
+
+    /// Bottom first. `wss:` will be a TCP transport under `[Tls, Ws]`, and the
+    /// wrapping runs in this order, each layer taking what the one below it
+    /// produced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<LayerSpec>,
+}
+
+impl From<Transport> for EndpointSpec {
+    fn from(transport: Transport) -> Self {
+        Self {
+            transport,
+            layers: Vec::new(),
+        }
+    }
+}
+
+impl EndpointSpec {
+    pub fn is_listen(&self) -> bool {
+        self.transport.is_listen()
+    }
+
+    pub fn is_datagram(&self) -> bool {
+        self.layers
+            .iter()
+            .fold(self.transport.is_datagram(), |below, layer| {
+                layer.is_datagram(below)
+            })
+    }
+
+    pub fn is_fork(&self) -> bool {
+        self.transport.is_fork()
+    }
+
+    pub fn name(&self) -> String {
+        self.transport.name()
+    }
+
+    pub fn max_connections(&self) -> NonZeroUsize {
+        self.transport.max_connections()
+    }
+
+    /// A layered endpoint is never blocking-backed: a handshake needs the async
+    /// path whatever is underneath it, so the synchronous copy is not an
+    /// option.
+    pub fn is_blocking_backed(&self) -> bool {
+        self.layers.is_empty() && self.transport.is_blocking_backed()
+    }
+
+    /// Refuse a stack that cannot work, before anything is opened.
+    ///
+    /// Called from the parser and again from `Relay::new`, because a spec can
+    /// also arrive straight out of a config file without passing the parser.
+    pub fn check(&self) -> anyhow::Result<()> {
+        let mut carries = self.transport.is_datagram();
+
+        for layer in &self.layers {
+            layer.check(carries, self.transport.is_listen())?;
+            carries = layer.is_datagram(carries);
+        }
+
+        if !self.layers.is_empty() && self.reconnect().keeps() {
+            anyhow::bail!(
+                "reconnect=keep is not supported under a layer yet: reopening would have to redo \
+                 the handshake underneath a pipeline that is mid-stream, and the hole that leaves \
+                 lands inside a record rather than between bytes. Use reconnect=restart",
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Put each layer around an open connection, bottom first.
+    ///
+    /// A listening endpoint layers what it accepted, so the side is decided by
+    /// the transport rather than passed in: `tls-listen:` accepts a handshake
+    /// where `tls:` starts one.
+    pub(crate) async fn wrap(&self, stream: EndpointStream) -> anyhow::Result<EndpointStream> {
+        if self.layers.is_empty() {
+            return Ok(stream);
+        }
+
+        let host = self.transport.host().unwrap_or_default().to_owned();
+        let mut stream = stream;
+
+        for layer in &self.layers {
+            stream = if self.transport.is_listen() {
+                layer.wrap_server(stream).await?
+            } else {
+                layer.wrap_client(stream, &host).await?
+            };
+        }
+
+        Ok(stream)
+    }
+
+    pub fn connect_sync(&self, dir: Direction, buffer: usize) -> anyhow::Result<SyncHalves> {
+        self.transport.connect_sync(dir, buffer)
+    }
+
+    /// What this endpoint asked to happen when an established connection
+    /// fails. [`Continuity::None`] for anything that cannot be reopened.
+    pub fn reconnect(&self) -> Continuity {
+        self.transport
+            .retry()
+            .map_or(Continuity::None, |r| r.reconnect)
+    }
+
+    /// How long this endpoint asked to wait before reopening. Zero for one
+    /// that cannot be reopened, which never reaches the restart loop anyway.
+    pub fn reconnect_delay(&self) -> std::time::Duration {
+        self.transport
+            .retry()
+            .map_or(std::time::Duration::ZERO, |r| r.reconnect_delay())
+    }
+
+    /// Open this endpoint, blocking until it has a peer where that applies.
+    ///
+    /// `dir` decides which way the half-duplex endpoints open. `buffer` is the
+    /// relay's copy buffer, passed down so that pipe-backed descriptors can be
+    /// sized to match it.
+    ///
+    /// A scheme that can be reopened is tried as many times as it asked to be.
+    /// The loop is here rather than in each scheme so that a scheme only has to
+    /// hold a [`Retry`] and parse its options.
+    ///
+    /// Under `reconnect=keep` the connection comes back wrapped in a
+    /// [`Reconnecting`], which reopens it underneath the pipeline. That takes
+    /// an `Arc<Self>`, so this is the one entry point that needs the spec to be
+    /// shared rather than borrowed.
+    pub async fn connect_shared(
+        self: &Arc<Self>,
+        dir: Direction,
+        buffer: usize,
+    ) -> anyhow::Result<Connection> {
+        let opened = self.connect_inner(dir, buffer).await?;
+
+        if !self.reconnect().keeps() {
+            return Ok(opened);
+        }
+
+        let reconnecting = Reconnecting::new(self.clone(), dir, buffer, opened)?;
+
+        Ok(EndpointStream::Duplex(Box::new(reconnecting)).into_connection())
+    }
+
+    /// Open with the attempt policy applied and nothing wrapped around it.
+    ///
+    /// The reconnecting stream calls this rather than [`Self::connect_shared`],
+    /// which is what stops a redial from wrapping itself again.
+    /// The handshake happens after the attempt policy has finished, not inside
+    /// it: `retry` counts connections that could not be opened, and a peer that
+    /// answered and then failed the handshake is a different problem from one
+    /// that is not there yet.
+    pub(in crate::endpoint) async fn connect_inner(
+        &self,
+        dir: Direction,
+        buffer: usize,
+    ) -> anyhow::Result<Connection> {
+        let opened = self.connect_transport(dir, buffer).await?;
+        let Connection {
+            stream,
+            guard,
+            keepalive,
+        } = opened;
+
+        Ok(Connection {
+            stream: self.wrap(stream).await?,
+            guard,
+            keepalive,
+        })
+    }
+
+    async fn connect_transport(&self, dir: Direction, buffer: usize) -> anyhow::Result<Connection> {
+        let Some(retry) = self.transport.retry() else {
+            return self.transport.connect_once(dir, buffer).await;
+        };
+
+        let mut attempt = 1;
+
+        loop {
+            let opened = match retry.deadline() {
+                Some(deadline) => {
+                    tokio::time::timeout(deadline, self.transport.connect_once(dir, buffer))
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!("connect timed out after {deadline:?}"))
+                        })
+                }
+                None => self.transport.connect_once(dir, buffer).await,
+            };
+
+            match opened {
+                Ok(connection) => return Ok(connection),
+                Err(e) if retry.again(attempt) => {
+                    let wait = retry.wait();
+
+                    // A relay waiting for a server that has not started yet
+                    // should say so rather than looking hung.
+                    tracing::warn!(
+                        endpoint = self.transport.name(),
+                        attempt,
+                        "connect failed, retrying in {wait:?}: {e:#}",
+                    );
+
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+/// One transport, parsed.
 ///
 /// The variants are newtypes over the per-transport structs so that the fields
 /// live with the code that uses them. The serde representation is unchanged by
@@ -150,7 +387,7 @@ pub enum Direction {
 /// still deserialises.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum EndpointSpec {
+pub enum Transport {
     #[serde(
         alias = "TCP",
         alias = "tcp-connect",
@@ -254,7 +491,7 @@ pub enum EndpointSpec {
     Chan(Chan),
 }
 
-impl EndpointSpec {
+impl Transport {
     pub fn is_listen(&self) -> bool {
         matches!(
             self,
@@ -382,97 +619,28 @@ impl EndpointSpec {
         }
     }
 
-    /// What this endpoint asked to happen when an established connection
-    /// fails. [`Continuity::None`] for anything that cannot be reopened.
-    pub fn reconnect(&self) -> Continuity {
-        self.retry().map_or(Continuity::None, |r| r.reconnect)
-    }
-
-    /// How long this endpoint asked to wait before reopening. Zero for one
-    /// that cannot be reopened, which never reaches the restart loop anyway.
-    pub fn reconnect_delay(&self) -> std::time::Duration {
-        self.retry()
-            .map_or(std::time::Duration::ZERO, |r| r.reconnect_delay())
-    }
-
-    /// Open this endpoint, blocking until it has a peer where that applies.
+    /// The host this transport was pointed at, for a layer that needs a name to
+    /// check a certificate against.
     ///
-    /// `dir` decides which way the half-duplex endpoints open. `buffer` is the
-    /// relay's copy buffer, passed down so that pipe-backed descriptors can be
-    /// sized to match it.
-    ///
-    /// A scheme that can be reopened is tried as many times as it asked to be.
-    /// The loop is here rather than in each scheme so that a scheme only has to
-    /// hold a [`Retry`] and parse its options.
-    ///
-    /// Under `reconnect=keep` the connection comes back wrapped in a
-    /// [`Reconnecting`], which reopens it underneath the pipeline. That takes
-    /// an `Arc<Self>`, so this is the one entry point that needs the spec to be
-    /// shared rather than borrowed.
-    pub async fn connect_shared(
-        self: &Arc<Self>,
-        dir: Direction,
-        buffer: usize,
-    ) -> anyhow::Result<Connection> {
-        let opened = self.connect_inner(dir, buffer).await?;
-
-        if !self.reconnect().keeps() {
-            return Ok(opened);
+    /// `None` for a transport with no host of its own, which is every transport
+    /// a layer cannot sit on anyway.
+    pub(in crate::endpoint) fn host(&self) -> Option<&str> {
+        match self {
+            Self::Tcp(e) => Some(
+                e.addr
+                    .rsplit_once(':')
+                    .map_or(e.addr.as_str(), |(host, _)| host),
+            ),
+            Self::TcpListen(e) => e.host.as_deref(),
+            _ => None,
         }
-
-        let reconnecting = Reconnecting::new(self.clone(), dir, buffer, opened)?;
-
-        Ok(EndpointStream::Duplex(Box::new(reconnecting)).into_connection())
     }
-
-    /// Open with the attempt policy applied and nothing wrapped around it.
-    ///
-    /// The reconnecting stream calls this rather than [`Self::connect_shared`],
-    /// which is what stops a redial from wrapping itself again.
-    pub(in crate::endpoint) async fn connect_inner(
+    /// One open, which is what every scheme implements.
+    pub(in crate::endpoint) async fn connect_once(
         &self,
         dir: Direction,
         buffer: usize,
     ) -> anyhow::Result<Connection> {
-        let Some(retry) = self.retry() else {
-            return self.connect_once(dir, buffer).await;
-        };
-
-        let mut attempt = 1;
-
-        loop {
-            let opened = match retry.deadline() {
-                Some(deadline) => tokio::time::timeout(deadline, self.connect_once(dir, buffer))
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(anyhow::anyhow!("connect timed out after {deadline:?}"))
-                    }),
-                None => self.connect_once(dir, buffer).await,
-            };
-
-            match opened {
-                Ok(connection) => return Ok(connection),
-                Err(e) if retry.again(attempt) => {
-                    let wait = retry.wait();
-
-                    // A relay waiting for a server that has not started yet
-                    // should say so rather than looking hung.
-                    tracing::warn!(
-                        endpoint = self.name(),
-                        attempt,
-                        "connect failed, retrying in {wait:?}: {e:#}",
-                    );
-
-                    tokio::time::sleep(wait).await;
-                    attempt += 1;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    /// One open, which is what every scheme implements.
-    async fn connect_once(&self, dir: Direction, buffer: usize) -> anyhow::Result<Connection> {
         match self {
             Self::Tcp(e) => e.connect().await,
             Self::TcpListen(e) => e.connect().await,
