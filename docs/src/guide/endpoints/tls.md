@@ -23,6 +23,8 @@ $ tocat tcp-listen:8080,fork 'tls:backend.internal:443,cafile=/etc/ca.pem'
 | `verify=none`     | Accept any certificate. See below                                                   |
 | `servername=NAME` | The name to send in SNI and check against. Default is the host dialled. Alias `sni` |
 | `alpn=PROTOCOL`   | A protocol to offer. Repeat for more, in preference order                           |
+| `cert=PATH`       | A certificate to present, PEM. The client half of mutual TLS, with `keyfile`        |
+| `keyfile=PATH`    | The private key matching `cert`. Alias `key`                                        |
 
 Plus the
 [socket options](../endpoints.md#socket-options-which-the-socket-schemes-share)
@@ -37,13 +39,59 @@ a layer.
 $ tocat 'tls-listen:8443,fork,cert=/etc/cert.pem,keyfile=/etc/key.pem' tcp:localhost:8080
 ```
 
-| Option          | Description                                     |
-| --------------- | ----------------------------------------------- |
-| `cert=PATH`     | The certificate chain to present, PEM. Required |
-| `keyfile=PATH`  | The private key, PEM. Required. Alias `key`     |
-| `alpn=PROTOCOL` | A protocol to accept. Repeat for more           |
+| Option             | Description                                              |
+| ------------------ | -------------------------------------------------------- |
+| `cert=PATH`        | The certificate chain to present, PEM. Required          |
+| `keyfile=PATH`     | The private key, PEM. Required. Alias `key`              |
+| `client-auth=MODE` | Ask clients for a certificate. See below                 |
+| `cafile=PATH`      | Who may issue client certificates. Needed with the above |
+| `alpn=PROTOCOL`    | A protocol to accept. Repeat for more                    |
 
 Plus everything [`tcp-listen`](tcp.md) takes, including `fork`.
+
+## Mutual TLS
+
+Both sides can present a certificate and both can check one. The same four keys
+do it, read from whichever side they are on:
+
+- **`cert=` and `keyfile=`** are the identity this side presents. Required on
+  `tls-listen`, optional on `tls`, where supplying them is the client half.
+- **`cafile=`** is who this side trusts. On `tls` it replaces the platform store
+  as who may vouch for the server. On `tls-listen` it names who may issue a
+  client certificate.
+
+```console
+$ tocat 'tls-listen:8443,fork,cert=server.pem,keyfile=server-key.pem,cafile=ca.pem,client-auth=required' \
+    tcp:localhost:8080
+
+$ tocat - 'tls:api.internal:8443,cafile=ca.pem,cert=client.pem,keyfile=client-key.pem'
+```
+
+`client-auth` has three settings. `required` refuses a client that presents no
+certificate. `optional` asks for one and checks it if it arrives, but accepts a
+client that presents none, so it authenticates the clients that have a
+certificate without restricting who may connect. `none` is the default and asks
+for nothing.
+
+Two combinations are refused rather than accepted quietly:
+
+- **`client-auth` without `cafile=`.** Falling back to the platform store would
+  mean every public authority could vouch for anyone connecting, which is not a
+  restriction anybody wants. Who may issue a client certificate has no default
+  worth guessing.
+- **`cafile=` on a listener with `client-auth=none`.** Nothing would consult it,
+  and an option that sits there looking configured is worse than an error.
+
+To try it with [mkcert](https://github.com/FiloSottile/mkcert):
+
+```console
+$ mkcert localhost
+$ mkcert -client localhost
+$ CA="$(mkcert -CAROOT)/rootCA.pem"
+
+$ tocat "tls-listen:8443,fork,cert=./localhost.pem,keyfile=./localhost-key.pem,cafile=$CA,client-auth=required" \
+    tcp:localhost:8080
+```
 
 ## Talking to something with a self-signed certificate
 
@@ -125,8 +173,7 @@ expressible once there is more than one layer to stack.
 
 ## What is not here yet
 
-Client certificates, on either side: there is no way to present one to a server
-or to require one from a client. DTLS is out of scope, so a layer over `udp:` is
-refused rather than attempted. And `reconnect=keep` is refused under a layer,
-because reopening would have to redo the handshake underneath a pipeline that is
-mid-stream; use `reconnect=restart`.
+DTLS is out of scope, so a layer over `udp:` is refused rather than attempted.
+And `reconnect=keep` is refused under a layer, because reopening would have to
+redo the handshake underneath a pipeline that is mid-stream; use
+`reconnect=restart`.

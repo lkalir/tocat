@@ -36,6 +36,7 @@ use rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature},
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject as _},
+    server::WebPkiClientVerifier,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -60,6 +61,26 @@ pub enum Verify {
     None,
 }
 
+/// Whether a server asks its clients for a certificate.
+///
+/// Its own key rather than a second meaning for `verify=`: on a client that
+/// word means "check the peer", and a server reading `verify=none` as "clients
+/// need not authenticate" would be saying something quite different with the
+/// same spelling.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClientAuth {
+    /// No certificate is asked for, which is what a public server does.
+    #[default]
+    None,
+    /// Asked for, and checked if one is offered. A client with none is still
+    /// accepted, so this authenticates the clients that have a certifiacte
+    /// without restricting who may connect.
+    Optional,
+    /// Asked for, checked, and a client without one is refused.
+    Required,
+}
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Tls {
@@ -81,10 +102,15 @@ pub struct Tls {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alpn: Vec<String>,
 
-    /// The server's certificate chain, PEM. Required to accept.
+    /// The certificate chain this side presents, PEM. Required on
+    /// `tls-listen`; on `tls` it is the client half of mutual TLS.
     pub cert: Option<String>,
-    /// The server's private key, PEM.
+    /// The matching private key, PEM.
     pub keyfile: Option<String>,
+
+    /// Whether clients are asked for a certificate. `tls-listen` only, and it
+    /// needs `cafile=` to say who may issue them.
+    pub client_auth: ClientAuth,
 }
 
 impl Tls {
@@ -100,6 +126,7 @@ impl Tls {
             "alpn" => self.alpn.push(opt.string()?),
             "cert" => self.cert = Some(opt.string()?),
             "keyfile" | "key" => self.keyfile = Some(opt.string()?),
+            "clientauth" => self.client_auth = client_auth(opt)?,
             _ => return Ok(false),
         }
 
@@ -126,20 +153,40 @@ impl Tls {
             }
 
             for (name, set) in [
-                ("cafile", self.cafile.is_some()),
                 ("pin", self.pin.is_some()),
                 ("servername", self.servername.is_some()),
                 ("verify", self.verify != Verify::default()),
             ] {
                 if set {
-                    bail!(
-                        "{name} is a client option and does nothing on tls-listen; client \
-                         certificates are not supported yet"
-                    );
+                    bail!("{name} is a client option and does nothing on tls-listen");
                 }
             }
-        } else if self.cert.is_some() || self.keyfile.is_some() {
-            bail!("cert and keyfile are for tls-listen; client certificates are not supported yet");
+
+            match (self.client_auth, self.cafile.is_some()) {
+                // Who may issue a client certificate has no default worth guessing: the platform
+                // store would trust every public authority to vouce for anyone who connects.
+                (ClientAuth::Required | ClientAuth::Optional, false) => {
+                    bail!("client-auth needs cafile= naming who may issue client certificates");
+                }
+                (ClientAuth::None, true) => {
+                    bail!(
+                        "cafile on tls-listen names the client certificate issuer, so it does \
+                         nothing without client-auth=required or client-auth=optional",
+                    );
+                }
+                _ => {}
+            }
+        } else {
+            if self.client_auth != ClientAuth::default() {
+                bail!(
+                    "client-auth is a tls-listen option: a client presents a certificate with \
+                     cert= and keyfile= rather than asking for one",
+                );
+            }
+
+            if self.cert.is_some() != self.keyfile.is_some() {
+                bail!("cert and keyfile go together: neither is any use without the other");
+            }
         }
 
         if self.pin.is_some() && self.verify == Verify::None {
@@ -204,34 +251,47 @@ impl Tls {
             .with_safe_default_protocol_versions()
             .context("no protocol versions available")?;
 
-        let config = match (&self.pin, &self.verify) {
+        // The verifier first and the identity second, because the two are independent:
+        // pairing every verification mode with every identity by hand would be
+        // six branches, saying the same thing twice.
+        let builder = match (&self.pin, &self.verify) {
             (Some(pin), _) => builder
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(Pinned::new(pin, provider)?))
-                .with_no_client_auth(),
+                .with_custom_certificate_verifier(Arc::new(Pinned::new(pin, provider.clone())?)),
 
+            // The verifier first and the identity second, because the two are independent: pairing
+            // every verification mode with every identity by hand would be six
+            // branches, saying the same thing twice.
             (None, Verify::None) => {
                 warn!(
                     "certificate verification is off for this endpoint: the connection is \
-                       encrypted but the peer is unauthenticated"
+                     encrypted but the peer is unauthenticated"
                 );
 
                 builder
                     .dangerous()
-                    .with_custom_certificate_verifier(Arc::new(Unverified(provider)))
-                    .with_no_client_auth()
+                    .with_custom_certificate_verifier(Arc::new(Unverified(provider.clone())))
             }
 
-            (None, Verify::Peer) => builder
-                .with_root_certificates(self.roots()?)
-                .with_no_client_auth(),
+            (None, Verify::Peer) => builder.with_root_certificates(self.roots()?),
         };
 
-        Ok(config)
+        let (Some(cert), Some(keyfile)) = (&self.cert, &self.keyfile) else {
+            return Ok(builder.with_no_client_auth());
+        };
+
+        builder
+            .with_client_auth_cert(chain(cert)?, key(keyfile)?)
+            .context("the client certificate and key do not go together")
     }
 
     /// The trust anchors: a file if one was named, the platform's store
     /// otherwise.
+    ///
+    /// Both sides use this, and it means different things on each. On a client
+    /// it is who may vouce for the server; on a listener it is who may issue a
+    /// client certificate, where there is no sensible default and `cafile=` is
+    /// therefore required.
     fn roots(&self) -> anyhow::Result<RootCertStore> {
         let mut roots = RootCertStore::empty();
 
@@ -268,25 +328,53 @@ impl Tls {
             bail!("tls-listen needs cert= and keyfile=");
         };
 
-        let mut reader =
-            BufReader::new(File::open(cert).with_context(|| format!("opening {cert}"))?);
-
-        let chain = rustls_pemfile::certs(&mut reader)
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("reading {cert}"))?;
-
-        let key =
-            PrivateKeyDer::from_pem_file(keyfile).with_context(|| format!("reading {keyfile}"))?;
-
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
-        ServerConfig::builder_with_provider(provider)
+        let builder = ServerConfig::builder_with_provider(provider.clone())
             .with_safe_default_protocol_versions()
-            .context("no protocol versions available")?
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
+            .context("the certificate and key do not go together")?;
+
+        let builder = match self.client_auth {
+            ClientAuth::None => builder.with_no_client_auth(),
+            auth => {
+                // `roots` is the client certificate issuer here rather than a
+                // server trust anchor, which is why cafile is
+                // required above: falling back to the platform store would
+                // accept a client certificate from any public authority.
+                let verifier =
+                    WebPkiClientVerifier::builder_with_provider(Arc::new(self.roots()?), provider);
+
+                let verifier = match auth {
+                    ClientAuth::Optional => verifier.allow_unauthenticated(),
+                    _ => verifier,
+                };
+
+                builder.with_client_cert_verifier(
+                    verifier
+                        .build()
+                        .context("building the client certificate verifier")?,
+                )
+            }
+        };
+
+        builder
+            .with_single_cert(chain(cert)?, key(keyfile)?)
             .context("the certificate and key do not go together")
     }
+}
+
+/// A PEM certificate chain from a file.
+fn chain(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let mut reader = BufReader::new(File::open(path).with_context(|| format!("opening {path}"))?);
+
+    rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("reading {path}"))
+}
+
+/// A PEM private key from a file.
+fn key(path: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
+    PrivateKeyDer::from_pem_file(path).with_context(|| format!("reading {path}"))
 }
 
 /// Match the leaf's fingerprint, ignore the chain.
@@ -423,6 +511,17 @@ impl ServerCertVerifier for Unverified {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn client_auth(opt: &Opt<'_>) -> Result<ClientAuth, ParseEndpointError> {
+    match normalize(opt.text()?).as_str() {
+        "none" | "off" => Ok(ClientAuth::None),
+        "optional" => Ok(ClientAuth::Optional),
+        "required" | "require" | "on" => Ok(ClientAuth::Required),
+        other => Err(ParseEndpointError::InvalidFlag(format!(
+            "client-auth={other}, which is none, optional, or required"
+        ))),
     }
 }
 

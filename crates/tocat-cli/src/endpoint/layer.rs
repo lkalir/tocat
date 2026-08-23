@@ -28,7 +28,7 @@ mod tls;
 
 use serde::{Deserialize, Serialize};
 
-pub use self::tls::{Tls, Verify};
+pub use self::tls::{ClientAuth, Tls, Verify};
 use crate::endpoint::EndpointStream;
 
 #[derive(Debug, Deserialize, Serialize)]

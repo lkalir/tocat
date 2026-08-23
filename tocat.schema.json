@@ -371,7 +371,7 @@
         },
         "cafile": {
           "type": "string",
-          "description": "Trust anchors from a PEM file instead of the platform's store. Alias ca."
+          "description": "Trust anchors from a PEM file. On tls it replaces the platform's store as who may vouch for the server; on tls-listen it names who may issue client certificates, where there is no sensible default and it is therefore required alongside client-auth. Alias ca."
         },
         "pin": {
           "type": "string",
@@ -409,11 +409,21 @@
         },
         "cert": {
           "type": "string",
-          "description": "The certificate chain to present, PEM. Required to accept."
+          "description": "The certificate chain this side presents, PEM. Required on tls-listen; on tls it is the client half of mutual TLS, and goes with keyfile."
         },
         "keyfile": {
           "type": "string",
-          "description": "The private key, PEM. Required to accept. Alias key."
+          "description": "The private key matching cert, PEM. Alias key."
+        },
+        "client-auth": {
+          "type": "string",
+          "enum": [
+            "none",
+            "optional",
+            "required"
+          ],
+          "default": "none",
+          "description": "Whether a listener asks its clients for a certificate. required refuses a client without one; optional asks and checks a certificate if one is offered, but accepts a client that presents none, so it authenticates the clients that have a certificate without restricting who may connect. Needs cafile to say who may issue them. tls-listen only."
         }
       }
     },
