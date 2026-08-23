@@ -14,7 +14,11 @@
 //!
 //! [`datagram`]: crate::endpoint::datagram
 
-use std::{net::SocketAddr, num::NonZeroUsize, sync::Arc};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    num::NonZeroUsize,
+    sync::Arc,
+};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -59,6 +63,127 @@ async fn bind_datagram(addr: SocketAddr, options: &SocketOptions) -> std::io::Re
     UdpSocket::from_std(socket)
 }
 
+/// Group membership and the knobs that go with it.
+///
+/// Joining is a receiver's business and the TTL is a sender's, but both live
+/// here because one endpoint is often both: a relay that answers on a group
+/// address sends from the same socket it joined on.
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct Multicast {
+    /// The group to join. Without this the rest still applies, which is what a
+    /// sender that never joins anything wants.
+    pub multicast_group: Option<IpAddr>,
+
+    /// Which interface to join on, and to send from. An address for IPv4, an
+    /// interface index for IPv6, because that is what the two kernels take.
+    /// Unset lets the routing table choose, which on a host with more than one
+    /// interface is a coin toss worth avoiding.
+    pub multicast_interface: Option<String>,
+
+    /// Hops a datagram may take. One by default in the kernel, which keeps
+    /// multicast on the local segment; raising it is how it leaves.
+    pub multicast_ttl: Option<u32>,
+
+    /// Whether a sender also receives its own datagrams. On by default in the
+    /// kernel, and the usual reason to turn it off is a relay that would
+    /// otherwise hear itself.
+    pub multicast_loop: Option<bool>,
+}
+
+impl Multicast {
+    pub(in crate::endpoint) fn option(
+        &mut self,
+        opt: &Opt<'_>,
+    ) -> Result<bool, ParseEndpointError> {
+        match normalize(opt.key).as_str() {
+            "multicastgroup" | "multicast" | "group" => {
+                self.multicast_group = Some(address(opt)?);
+            }
+            "multicastinterface" | "interface" | "iface" => {
+                self.multicast_interface = Some(opt.string()?);
+            }
+            "multicastttl" | "ttl" => self.multicast_ttl = Some(opt.count()?.get() as u32),
+            "multicastloop" | "loop" => self.multicast_loop = Some(opt.flag()?),
+            _ => return Ok(false),
+        }
+
+        Ok(true)
+    }
+
+    /// Join and configure, on a socket that is already bound.
+    ///
+    /// Membership is a property of the socket rather than of the bind, so this
+    /// belongs after it. What does not work after the bind is the address the
+    /// socket is bound to: joining a group on a socket bound to a specific
+    /// unicast address will not receive the group's traffic, so a receiver
+    /// binds the wildcard or the group address itself.
+    fn apply(&self, socket: &UdpSocket) -> anyhow::Result<()> {
+        // The v4 and v6 setters are separate syscalls on separate options, and
+        // a socket only has the pair its family uses. The group is what says
+        // which; without one, a sender is assumed to be IPv4, which is what an
+        // unqualified `ttl=` has always meant elsewhere.
+        let v6 = matches!(self.multicast_group, Some(IpAddr::V6(_)));
+
+        if let Some(ttl) = self.multicast_ttl {
+            if v6 {
+                // tokio has the v6 loop setter but not the hop limit, so this one goes through
+                // rustix, as the keepalive timers do.
+                rustix::net::sockopt::set_ipv6_multicast_hops(socket, ttl)?;
+            } else {
+                socket.set_multicast_ttl_v4(ttl)?;
+            }
+        }
+
+        if let Some(on) = self.multicast_loop {
+            if v6 {
+                socket.set_multicast_loop_v6(on)?;
+            } else {
+                socket.set_multicast_loop_v4(on)?;
+            }
+        }
+
+        let Some(group) = self.multicast_group else {
+            return Ok(());
+        };
+
+        match group {
+            IpAddr::V4(group) => {
+                let interface = match &self.multicast_interface {
+                    Some(text) => text
+                        .parse::<Ipv4Addr>()
+                        .with_context(|| format!("{text} is not an IPv4 interface address"))?,
+                    None => Ipv4Addr::UNSPECIFIED,
+                };
+
+                socket
+                    .join_multicast_v4(group, interface)
+                    .with_context(|| format!("joining {group} on {interface}"))?;
+            }
+            IpAddr::V6(group) => {
+                let interface = match &self.multicast_interface {
+                    Some(text) => text
+                        .parse::<u32>()
+                        .with_context(|| format!("{text} is not an IPv6 interface index"))?,
+                    None => 0,
+                };
+
+                socket
+                    .join_multicast_v6(&group, interface)
+                    .with_context(|| format!("joining {group} on interface {interface}"))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn address(opt: &Opt<'_>) -> Result<IpAddr, ParseEndpointError> {
+    opt.text()?
+        .parse()
+        .map_err(|_| ParseEndpointError::InvalidFlag(format!("not an IP address: {}", opt.key)))
+}
+
 /// The first address a name resolves to, or an error naming what failed to
 /// resolve.
 async fn resolve(addr: impl tokio::net::ToSocketAddrs, what: &str) -> std::io::Result<SocketAddr> {
@@ -79,6 +204,8 @@ pub struct Udp {
     pub name: Option<String>,
     #[serde(flatten)]
     pub options: SocketOptions,
+    #[serde(flatten)]
+    pub multicast: Multicast,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -100,6 +227,8 @@ pub struct UdpListen {
     pub max_connections: Option<NonZeroUsize>,
     #[serde(flatten)]
     pub options: SocketOptions,
+    #[serde(flatten)]
+    pub multicast: Multicast,
 }
 
 impl Udp {
@@ -116,12 +245,14 @@ impl Udp {
         let mut bind = None;
         let mut name = None;
         let mut options = SocketOptions::default();
+        let mut multicast = Multicast::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "bind" => bind = Some(opt.string()?),
                 "name" => name = Some(opt.string()?),
                 _ if options.option(&opt, Family::Datagram)? => {}
+                _ if multicast.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -131,6 +262,7 @@ impl Udp {
             bind,
             name,
             options,
+            multicast,
         })
     }
 
@@ -163,6 +295,7 @@ impl Udp {
             .with_context(|| format!("binding {local}"))?;
 
         self.options.apply(&socket)?;
+        self.multicast.apply(&socket)?;
 
         socket
             .connect(peer)
@@ -186,6 +319,7 @@ impl UdpListen {
         let mut fork = false;
         let mut max_connections = None;
         let mut options = SocketOptions::default();
+        let mut multicast = Multicast::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
@@ -193,6 +327,7 @@ impl UdpListen {
                 "maxconnections" | "maxconn" | "maxconns" => max_connections = Some(opt.count()?),
                 "name" => name = Some(opt.string()?),
                 _ if options.option(&opt, Family::Datagram)? => {}
+                _ if multicast.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -204,6 +339,7 @@ impl UdpListen {
             fork,
             max_connections,
             options,
+            multicast,
         })
     }
 
@@ -235,6 +371,9 @@ impl UdpListen {
 
         let socket = bind_datagram(addr, &self.options).await?;
         self.options.apply(&socket)?;
+        self.multicast
+            .apply(&socket)
+            .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
         Ok(socket)
     }
 

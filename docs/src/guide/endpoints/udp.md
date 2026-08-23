@@ -27,6 +27,51 @@ Nagle's algorithm to turn off.
 A `bind=` address is now resolved before the socket is created, so a name with
 several addresses takes the first.
 
+## Multicast
+
+Both forms take the options below, because one endpoint is often both a sender
+and a receiver: a relay answering on a group address sends from the socket it
+joined on.
+
+| Option                 | Description                                                         |
+| ---------------------- | ------------------------------------------------------------------- |
+| `multicast-group=ADDR` | Group to join. Aliases `multicast`, `group`                         |
+| `multicast-interface=` | Interface to join on and send from. Aliases `interface`, `iface`    |
+| `multicast-ttl=N`      | Hops a datagram may take. Default 1, the local segment. Alias `ttl` |
+| `multicast-loop=BOOL`  | Whether a sender hears itself. Default on. Alias `loop`             |
+
+```console
+# Receive a group and hand it to a local service
+$ tocat 'udp-listen:0.0.0.0:5353,reuseaddr,multicast-group=239.1.1.1' tcp:localhost:8080
+
+# Send to a group, off this host, without hearing the echo
+$ tocat - 'udp:239.1.1.1:5353,multicast-ttl=32,multicast-loop=false'
+```
+
+**A receiver has to bind the wildcard or the group address.** Joining a group on
+a socket bound to a specific unicast address will not receive the group's
+traffic, and it fails by receiving nothing rather than by erroring, which is the
+hardest kind of failure to diagnose. `udp-listen:0.0.0.0:5353` or
+`udp-listen:239.1.1.1:5353`, not `udp-listen:192.168.1.5:5353`.
+
+**The group decides the address family, including for `multicast-ttl`.** IPv4
+and IPv6 have separate socket options for the hop limit and for the loopback
+flag, so the group is what says which pair to set. Without a group, an
+unqualified `ttl=` is read as IPv4. `multicast-interface` follows the same
+split: an address for IPv4, an interface index for IPv6.
+
+**`reuseaddr` is usually wanted on a receiver**, since more than one process on
+the host may be listening to the same group and port.
+
+### What is not here yet
+
+The join happens once, when the socket is bound. There is no way to leave a
+group, to join more than one, or to change the membership of a running relay,
+and a
+[`reconnect`](../endpoints.md#resilience-on-the-schemes-that-can-be-reopened)
+that reopens the socket rejoins from scratch. Source-specific multicast is not
+supported either.
+
 `udp:` resolves the peer before binding, so that the local socket lands in the
 same address family. Without `fork`, `udp-listen:` peeks the first datagram to
 learn who the peer is and then connects to it, leaving that datagram queued for

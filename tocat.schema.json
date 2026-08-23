@@ -674,6 +674,37 @@
             "256KiB"
           ]
         },
+        "multicast-group": {
+          "type": "string",
+          "description": "A multicast group to join. A receiver must also be bound to the wildcard address or to the group itself: joining on a socket bound to a specific unicast address will not receive the group's traffic, and fails by receiving nothing rather than by erroring. Aliases multicast, group.",
+          "examples": [
+            "239.1.1.1",
+            "ff02::1"
+          ]
+        },
+        "multicast-interface": {
+          "type": "string",
+          "description": "Which interface to join on and send from. An address for IPv4 and an interface index for IPv6, because that is what the two kernels take. Unset lets the routing table choose, which on a host with more than one interface is a coin toss. Aliases interface, iface.",
+          "examples": [
+            "192.168.1.5",
+            "2"
+          ]
+        },
+        "multicast-ttl": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hops a multicast datagram may take. One by default in the kernel, which keeps it on the local segment. The group's family decides whether this sets the IPv4 TTL or the IPv6 hop limit, so with no group it is read as IPv4. Alias ttl.",
+          "examples": [
+            32
+          ]
+        },
+        "multicast-loop": {
+          "type": "boolean",
+          "description": "Whether a sender also receives its own datagrams. On by default in the kernel; the usual reason to turn it off is a relay that would otherwise hear itself. Alias loop.",
+          "examples": [
+            false
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -739,6 +770,37 @@
           "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
           "examples": [
             "256KiB"
+          ]
+        },
+        "multicast-group": {
+          "type": "string",
+          "description": "A multicast group to join. A receiver must also be bound to the wildcard address or to the group itself: joining on a socket bound to a specific unicast address will not receive the group's traffic, and fails by receiving nothing rather than by erroring. Aliases multicast, group.",
+          "examples": [
+            "239.1.1.1",
+            "ff02::1"
+          ]
+        },
+        "multicast-interface": {
+          "type": "string",
+          "description": "Which interface to join on and send from. An address for IPv4 and an interface index for IPv6, because that is what the two kernels take. Unset lets the routing table choose, which on a host with more than one interface is a coin toss. Aliases interface, iface.",
+          "examples": [
+            "192.168.1.5",
+            "2"
+          ]
+        },
+        "multicast-ttl": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hops a multicast datagram may take. One by default in the kernel, which keeps it on the local segment. The group's family decides whether this sets the IPv4 TTL or the IPv6 hop limit, so with no group it is read as IPv4. Alias ttl.",
+          "examples": [
+            32
+          ]
+        },
+        "multicast-loop": {
+          "type": "boolean",
+          "description": "Whether a sender also receives its own datagrams. On by default in the kernel; the usual reason to turn it off is a relay that would otherwise hear itself. Alias loop.",
+          "examples": [
+            false
           ]
         },
         "name": {
