@@ -59,7 +59,7 @@ enum Listener {
     Unix(UnixListener, SocketOptions),
     /// Connection oriented like the others, message oriented like the one
     /// below: an accepted seqpacket socket is a datagram endpoint.
-    Seqpacket(UnixSeqpacketListener),
+    Seqpacket(UnixSeqpacketListener, SocketOptions),
     /// A connectionless socket has no accept: a sender is discovered by
     /// receiving from it. The socket is demultiplexed by source address
     /// instead, and each new address arrives here as a session to serve.
@@ -87,7 +87,7 @@ impl Listener {
             EndpointSpec::UnixSeqpacketListen(e) => {
                 let l = e.bind().await?;
                 info!(path = %e.path, "listening");
-                Ok((Listener::Seqpacket(l), e.path.guard()))
+                Ok((Listener::Seqpacket(l, e.options.clone()), e.path.guard()))
             }
             // The receive loops need the copy buffer for the same reason the
             // pump does: one receive is one message, and anything longer than
@@ -124,8 +124,9 @@ impl Listener {
                     .unwrap_or_else(|| "unnamed".to_string());
                 Ok((EndpointStream::unix(s), label))
             }
-            Listener::Seqpacket(l) => {
+            Listener::Seqpacket(l, options) => {
                 let s = l.accept().await?;
+                options.apply(&s)?;
 
                 // A connected unix socket is anonymous, so there is nothing to
                 // name the peer with. The stream form says the same thing
@@ -192,8 +193,11 @@ fn copy_sync(
 /// A configured relay: two endpoints, a plugin declaration list, and the side
 /// channels those plugins resolved to.
 pub struct Relay {
-    source: EndpointSpec,
-    sink: EndpointSpec,
+    /// Shared rather than owned because `reconnect=keep` hands the spec to the
+    /// stream it opens, which reopens it later and therefore outlives any
+    /// borrow.
+    source: Arc<EndpointSpec>,
+    sink: Arc<EndpointSpec>,
     plugins: Vec<PluginSpec>,
     registry: Registry,
     /// Frozen after construction; cloned per connection to resolve handles.
@@ -289,6 +293,22 @@ impl Relay {
             anyhow::bail!("{}", faults.join("\n"));
         }
 
+        // Under `fork` every accepted connection is already independent, so
+        // restarting the run would drop the ones that are still working. What
+        // a forked relay wants is a restart of the one connection that failed,
+        // which is a different thing and does not exist yet.
+        if (source.reconnect().restarts() || sink.reconnect().restarts())
+            && (source.is_fork() || sink.is_fork())
+        {
+            anyhow::bail!(
+                "reconnect=restart cannot be combined with fork: restarting reopens the whole \
+                 relay, which under fork would drop every other connection currently being \
+                 served. Per-connection restart is a different thing and does not exist yet; \
+                 reconnect=keep does work with fork, since each connection reopens its own \
+                 endpoint",
+            );
+        }
+
         plan.freeze();
 
         // Both would be writing to the same terminal, and only one of them
@@ -319,8 +339,8 @@ impl Relay {
         }
 
         Ok(Self {
-            source,
-            sink,
+            source: Arc::new(source),
+            sink: Arc::new(sink),
             plugins,
             registry,
             plan,
@@ -562,39 +582,98 @@ impl Relay {
 
     /// One connection, on the async path. The sync path is chosen by
     /// [`Self::dispatch`], which has to treat a signal differently.
+    /// Whether an established connection failing should reopen the pair rather
+    /// than end the run.
+    ///
+    /// Either end asking is enough. A relay is a pair, so there is no useful
+    /// reading in which one end restarts and the other does not.
+    fn restarts(&self) -> bool {
+        self.source.reconnect().restarts() || self.sink.reconnect().restarts()
+    }
+
+    /// The floor between restarts, taken from whichever end asked for the
+    /// longer one: a delay is a limit on how hard this relay leans on its
+    /// peers, and the more cautious answer is the one to honour.
+    fn restart_delay(&self) -> std::time::Duration {
+        self.source
+            .reconnect_delay()
+            .max(self.sink.reconnect_delay())
+    }
+
+    /// Open both ends, copy until the path ends, and open them again if it
+    /// ended in a failure and the endpoints asked for that.
+    ///
+    /// Only a failure. `Ok` here means both directions reached end of stream,
+    /// which is a peer saying it is finished, and reopening past that would
+    /// make an ordinary relay impossible to end.
+    ///
+    /// Everything per connection is inside the loop, which is the point: the
+    /// guards drop, so a `unix-listen:` path is unlinked before it is bound
+    /// again, and the chains are rebuilt, so stages start from nothing rather
+    /// than from whatever half-consumed state the dead connection left.
     async fn run_once(&self, shutdown: Shutdown) -> anyhow::Result<()> {
-        let (src_conn, sink_conn) = if self.source.is_listen() && self.sink.is_listen() {
-            // This prevents clients connecting to the sink from needlessly being blocked on
-            // waiting for clients to connect to the source first
-            tokio::try_join!(
-                self.source.connect(Direction::Source, self.buffer),
-                self.sink.connect(Direction::Sink, self.buffer)
-            )?
-        } else {
-            (
-                self.source.connect(Direction::Source, self.buffer).await?,
-                self.sink.connect(Direction::Sink, self.buffer).await?,
-            )
-        };
+        loop {
+            let (src_conn, sink_conn) = if self.source.is_listen() && self.sink.is_listen() {
+                // This prevents clients connecting to the sink from needlessly being blocked on
+                // waiting for clients to connect to the source first
+                tokio::try_join!(
+                    self.source.connect_shared(Direction::Source, self.buffer),
+                    self.sink.connect_shared(Direction::Sink, self.buffer)
+                )?
+            } else {
+                (
+                    self.source
+                        .connect_shared(Direction::Source, self.buffer)
+                        .await?,
+                    self.sink
+                        .connect_shared(Direction::Sink, self.buffer)
+                        .await?,
+                )
+            };
 
-        let _guards = (src_conn.guard, sink_conn.guard);
+            let _guards = (src_conn.guard, sink_conn.guard);
 
-        let (forward, reverse) = self.chains(&self.source.name(), &self.sink.name(), None)?;
+            let (forward, reverse) = self.chains(&self.source.name(), &self.sink.name(), None)?;
 
-        self.relay_streams(
-            src_conn.stream,
-            sink_conn.stream,
-            forward,
-            reverse,
-            shutdown,
-        )
-        .await
+            let result = self
+                .relay_streams(
+                    src_conn.stream,
+                    sink_conn.stream,
+                    forward,
+                    reverse,
+                    shutdown.clone(),
+                )
+                .await;
+
+            match result {
+                Ok(()) => return Ok(()),
+
+                // A drain is not something to reconnect through: the relay has
+                // been told to stop, and reopening would keep it alive past
+                // the point it was asked to end.
+                Err(e) if self.restarts() && !shutdown.is_triggered() => {
+                    let delay = self.restart_delay();
+                    warn!(
+                        error = format!("{e:#}"),
+                        "connection failed, restarting in {delay:?}"
+                    );
+
+                    // Before reopening rather than after failing, so a peer
+                    // that accepts and immediately resets cannot spin this
+                    // loop. The guards are already dropped by now, so the wait
+                    // does not hold a socket path.
+                    tokio::time::sleep(delay).await;
+                }
+
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn listening(&self, peer_dir: Direction) -> &EndpointSpec {
         match peer_dir {
-            Direction::Sink => &self.source,
-            Direction::Source => &self.sink,
+            Direction::Sink => self.source.as_ref(),
+            Direction::Source => self.sink.as_ref(),
         }
     }
 
@@ -677,12 +756,16 @@ impl Relay {
         let _connection = self.progress.as_ref().map(|meter| meter.connected());
 
         let listen = self.listening(peer_dir);
-        let peer_spec = match peer_dir {
+
+        // The `Arc` is what `connect_shared` needs; everything after this wants
+        // a plain reference, and the two cannot be the same binding.
+        let dialled_spec = match peer_dir {
             Direction::Sink => &self.sink,
             Direction::Source => &self.source,
         };
 
-        let dialled = peer_spec.connect(peer_dir, self.buffer).await?;
+        let dialled = dialled_spec.connect_shared(peer_dir, self.buffer).await?;
+        let peer_spec = dialled_spec.as_ref();
         let _guard = dialled.guard;
 
         let (src_stream, sink_stream, src_spec, sink_spec) = match peer_dir {

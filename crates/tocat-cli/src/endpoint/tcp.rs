@@ -17,6 +17,7 @@ use tracing::info;
 use crate::endpoint::{
     Connection, DEFAULT_HOST, DEFAULT_PORT, EndpointStream,
     parse::{Opt, ParseEndpointError, host_port},
+    retry::Retry,
     sockopt::{DEFAULT_BACKLOG, Family, SocketOptions},
 };
 
@@ -29,6 +30,8 @@ pub struct Tcp {
     pub bind: Option<String>,
     #[serde(flatten)]
     pub options: SocketOptions,
+    #[serde(flatten)]
+    pub retry: Retry,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,12 +66,14 @@ impl Tcp {
         let mut name = None;
         let mut bind = None;
         let mut options = SocketOptions::default();
+        let mut retry = Retry::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "name" => name = Some(opt.string()?),
                 "bind" => bind = Some(opt.string()?),
                 _ if options.option(&opt, Family::Tcp)? => {}
+                _ if retry.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -78,6 +83,7 @@ impl Tcp {
             name,
             bind,
             options,
+            retry,
         })
     }
 

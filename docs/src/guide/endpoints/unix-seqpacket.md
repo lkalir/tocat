@@ -15,7 +15,19 @@ $ tocat unix-seqpacket-listen:@tocat 'frame,format=lv32' tcp:collector:9000
 | `fork`, `max-connections=N` | As [`tcp-listen`](tcp.md). `unix-seqpacket-listen` only                                                        |
 | `unlink`                    | Remove a stale socket before binding. `unix-seqpacket-listen` only                                             |
 | `mode=NNN`                  | Octal permissions applied after binding, explicitly, so umask does not mask them. `unix-seqpacket-listen` only |
+| `backlog=N`                 | Kernel accept queue depth. Default is 1024. `unix-seqpacket-listen` only                                       |
 | `name=TEXT`                 | Label for logs and dumps. Default `unix-seqpacket://path`                                                      |
+
+Both forms take `linger`, `recv-buffer` and `send-buffer` from the shared
+[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share),
+and on the listening form they apply to every accepted connection. The TCP
+options are refused: a unix socket has no Nagle's algorithm, no keepalive and no
+address to hold in `TIME_WAIT`.
+
+`unix-seqpacket` also takes the
+[resilience options](../endpoints.md#resilience-on-the-schemes-that-can-be-reopened).
+`reconnect=keep` is refused here: it needs an endpoint that opens a two-way byte
+stream, and this one carries messages.
 
 The scheme is also spelled `unix-seqpkt`, `uds-seqpacket` and `seqpacket`, with
 `-listen` on the end for the listening form.

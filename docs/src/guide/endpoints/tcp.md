@@ -16,10 +16,12 @@ $ tocat - tcp:[::1]:9000
 | `name=TEXT` | Label for logs and dumps. Default `tcp://addr`                                      |
 
 Plus the shared
-[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share).
-Naming a local address or setting a pre-connect option means the socket has to
-exist before the connect, so one resolved address is dialled rather than each in
-turn.
+[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share)
+and the
+[resilience options](../endpoints.md#resilience-on-the-schemes-that-can-be-reopened),
+since a dialled socket is one that can be dialled again. Naming a local address
+or setting a pre-connect option means the socket has to exist before the
+connect, so one resolved address is dialled rather than each in turn.
 
 ## `tcp-listen` - accept inbound TCP connections
 

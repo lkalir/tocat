@@ -18,6 +18,7 @@ use crate::{
     endpoint::{
         Connection, EndpointStream,
         parse::{Opt, ParseEndpointError},
+        retry::Retry,
     },
 };
 
@@ -26,6 +27,10 @@ pub struct Exec {
     pub argv: Vec<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// A child that fails to spawn can be spawned again. What `retry` cannot
+    /// do is give a respawned child the state the last one had.
+    #[serde(flatten)]
+    pub retry: Retry,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -33,6 +38,8 @@ pub struct System {
     pub command: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub retry: Retry,
 }
 
 /// Spawn and hand back the child's pipes as the endpoint's stream.
@@ -67,14 +74,17 @@ impl Exec {
 
         let mut name = None;
 
+        let mut retry = Retry::default();
+
         for opt in opts {
             match opt.key {
                 "name" => name = Some(opt.string()?),
+                _ if retry.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
 
-        Ok(Self { argv, name })
+        Ok(Self { argv, name, retry })
     }
 
     /// Unlike the socket endpoints, an explicit `name` does not replace the
@@ -101,9 +111,12 @@ impl System {
     ) -> Result<Self, ParseEndpointError> {
         let mut name = None;
 
+        let mut retry = Retry::default();
+
         for opt in opts {
             match opt.key {
                 "name" => name = Some(opt.string()?),
+                _ if retry.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -111,6 +124,7 @@ impl System {
         Ok(Self {
             command: body.to_string(),
             name,
+            retry,
         })
     }
 

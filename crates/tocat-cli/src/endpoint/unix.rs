@@ -52,6 +52,7 @@ use tracing::info;
 use crate::endpoint::{
     Connection, EndpointStream,
     parse::{Opt, ParseEndpointError},
+    retry::Retry,
     sockopt::{DEFAULT_BACKLOG, Family, SocketOptions},
     sys::{Mode, PathGuard},
 };
@@ -269,6 +270,8 @@ pub struct Unix {
     pub name: Option<String>,
     #[serde(flatten)]
     pub options: SocketOptions,
+    #[serde(flatten)]
+    pub retry: Retry,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -299,11 +302,13 @@ impl Unix {
     ) -> Result<Self, ParseEndpointError> {
         let mut name = None;
         let mut options = SocketOptions::default();
+        let mut retry = Retry::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "name" => name = Some(opt.string()?),
                 _ if options.option(&opt, Family::UnixStream)? => {}
+                _ if retry.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -312,6 +317,7 @@ impl Unix {
             path: SocketPath::from_spec(body),
             name,
             options,
+            retry,
         })
     }
 
@@ -503,6 +509,7 @@ mod tests {
             path: SocketPath::from_spec("@tocat"),
             name: Some("control".to_owned()),
             options: SocketOptions::default(),
+            retry: Retry::default(),
         })
         .expect("serialises");
 

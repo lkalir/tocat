@@ -54,6 +54,8 @@ mod file;
 mod parse;
 mod pipe;
 mod pty;
+mod reconnecting;
+mod retry;
 mod sockopt;
 mod stdio;
 mod stream;
@@ -63,7 +65,7 @@ mod tty;
 mod udp;
 mod unix;
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +77,8 @@ pub use self::{
     parse::ParseEndpointError,
     pipe::Pipe,
     pty::{Pty, PtyExec},
+    reconnecting::Reconnecting,
+    retry::{Attempts, Continuity, Forever, Retry},
     sockopt::{Keepalive, SocketOptions},
     stdio::Stdio,
     stream::{
@@ -108,6 +112,12 @@ const DEFAULT_MAX_CONNECTIONS: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 /// The compact string form and the table form are both valid TOML for the same
 /// field, so the config accepts either and [`into_spec`](Self::into_spec)
 /// collapses them.
+// The two variants are wildly different sizes, a string against a spec of a few
+// hundred bytes, and that is fine: there are exactly two of these per run and
+// they live only until the config is resolved. Boxing would trade a stack cost
+// nobody pays for a heap allocation and an indirection. Revisit if a spec ever
+// ends up in a collection, which is what the lint is actually for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Endpoint {
@@ -355,12 +365,114 @@ impl EndpointSpec {
         }
     }
 
+    /// The attempt policy for this endpoint, if it is one that can be reopened.
+    ///
+    /// A listener is not: its answer to a peer that went away is to keep
+    /// accepting, and a bind that fails is a configuration error. A `file:` is
+    /// not either, because reopening one raises a question about the offset
+    /// that nobody has answered yet.
+    fn retry(&self) -> Option<&Retry> {
+        match self {
+            Self::Tcp(e) => Some(&e.retry),
+            Self::Unix(e) => Some(&e.retry),
+            Self::UnixSeqpacket(e) => Some(&e.retry),
+            Self::Exec(e) => Some(&e.retry),
+            Self::System(e) => Some(&e.retry),
+            _ => None,
+        }
+    }
+
+    /// What this endpoint asked to happen when an established connection
+    /// fails. [`Continuity::None`] for anything that cannot be reopened.
+    pub fn reconnect(&self) -> Continuity {
+        self.retry().map_or(Continuity::None, |r| r.reconnect)
+    }
+
+    /// How long this endpoint asked to wait before reopening. Zero for one
+    /// that cannot be reopened, which never reaches the restart loop anyway.
+    pub fn reconnect_delay(&self) -> std::time::Duration {
+        self.retry()
+            .map_or(std::time::Duration::ZERO, |r| r.reconnect_delay())
+    }
+
     /// Open this endpoint, blocking until it has a peer where that applies.
     ///
     /// `dir` decides which way the half-duplex endpoints open. `buffer` is the
     /// relay's copy buffer, passed down so that pipe-backed descriptors can be
     /// sized to match it.
-    pub async fn connect(&self, dir: Direction, buffer: usize) -> anyhow::Result<Connection> {
+    ///
+    /// A scheme that can be reopened is tried as many times as it asked to be.
+    /// The loop is here rather than in each scheme so that a scheme only has to
+    /// hold a [`Retry`] and parse its options.
+    ///
+    /// Under `reconnect=keep` the connection comes back wrapped in a
+    /// [`Reconnecting`], which reopens it underneath the pipeline. That takes
+    /// an `Arc<Self>`, so this is the one entry point that needs the spec to be
+    /// shared rather than borrowed.
+    pub async fn connect_shared(
+        self: &Arc<Self>,
+        dir: Direction,
+        buffer: usize,
+    ) -> anyhow::Result<Connection> {
+        let opened = self.connect_inner(dir, buffer).await?;
+
+        if !self.reconnect().keeps() {
+            return Ok(opened);
+        }
+
+        let reconnecting = Reconnecting::new(self.clone(), dir, buffer, opened)?;
+
+        Ok(EndpointStream::Duplex(Box::new(reconnecting)).into_connection())
+    }
+
+    /// Open with the attempt policy applied and nothing wrapped around it.
+    ///
+    /// The reconnecting stream calls this rather than [`Self::connect_shared`],
+    /// which is what stops a redial from wrapping itself again.
+    pub(in crate::endpoint) async fn connect_inner(
+        &self,
+        dir: Direction,
+        buffer: usize,
+    ) -> anyhow::Result<Connection> {
+        let Some(retry) = self.retry() else {
+            return self.connect_once(dir, buffer).await;
+        };
+
+        let mut attempt = 1;
+
+        loop {
+            let opened = match retry.deadline() {
+                Some(deadline) => tokio::time::timeout(deadline, self.connect_once(dir, buffer))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(anyhow::anyhow!("connect timed out after {deadline:?}"))
+                    }),
+                None => self.connect_once(dir, buffer).await,
+            };
+
+            match opened {
+                Ok(connection) => return Ok(connection),
+                Err(e) if retry.again(attempt) => {
+                    let wait = retry.wait();
+
+                    // A relay waiting for a server that has not started yet
+                    // should say so rather than looking hung.
+                    tracing::warn!(
+                        endpoint = self.name(),
+                        attempt,
+                        "connect failed, retrying in {wait:?}: {e:#}",
+                    );
+
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// One open, which is what every scheme implements.
+    async fn connect_once(&self, dir: Direction, buffer: usize) -> anyhow::Result<Connection> {
         match self {
             Self::Tcp(e) => e.connect().await,
             Self::TcpListen(e) => e.connect().await,

@@ -99,6 +99,84 @@ listening socket, so under `fork` every client gets them. `reuseaddr` and the
 buffer sizes are the exceptions: they have to be set before the bind, so they
 apply to the listening socket itself.
 
+## Resilience, on the schemes that can be reopened
+
+`tcp`, `unix`, `unix-seqpacket`, `exec` and `system` can be opened again, so
+they take the options below. A listening scheme does not: its answer to a peer
+that went away is `fork`, which keeps accepting, and a bind that fails is a
+configuration error rather than something to wait out. `file:` does not either,
+because reopening one raises a question about the offset that has no good
+answer; a FIFO whose writer comes and goes is [`pipe:`](endpoints/pipe.md) with
+`hold`.
+
+| Option              | Description                                                             |
+| ------------------- | ----------------------------------------------------------------------- |
+| `retry=N`           | Attempts, counting the first. Absent is one                             |
+| `retry=forever`     | Keep trying. Also spelled as the bare flag `forever`                    |
+| `interval=DURATION` | Between attempts. Default `1s`                                          |
+| `connect-timeout=`  | How long one attempt may take before it counts as failed                |
+| `reconnect=MODE`    | What to do when a working connection fails. `none`, `restart` or `keep` |
+| `reconnect-delay=`  | A floor between reconnects. Default `500ms`                             |
+
+```console
+# Wait for a backend that has not started yet
+$ tocat tcp-listen:9000 'tcp:backend:8080,retry=forever,interval=2s,connect-timeout=5s'
+```
+
+**Only a failure counts.** A peer that closes has said it is finished, so end of
+stream ends the run under every mode. Without that rule an ordinary relay would
+be impossible to end.
+
+**`connect-timeout` is worth setting whenever `retry` is.** An address that
+blackholes packets leaves the connect waiting on the kernel for minutes, and
+retrying cannot help because the first attempt never finishes.
+
+**`interval` and `reconnect-delay` answer different questions.** The first waits
+between connects that failed, the second between connections that worked and
+then did not. A peer that accepts and immediately resets is the case the second
+one exists for, and it is why the default is not zero.
+
+### The three reconnect modes
+
+`none` is the default and ends the run, which is what a relay has always done.
+
+`restart` reopens **both** endpoints and starts over with fresh plugin
+instances, as though the command had been rerun. The old path gets its end of
+stream first, so a stage holding bytes hands them over before it is replaced.
+Because both ends reopen, a listening source drops its current client and
+accepts the next one. It cannot be combined with `fork`: there every connection
+is already independent, and restarting the run would drop the ones still
+working.
+
+`keep` reopens only the endpoint that failed, underneath the pipeline, so the
+stages carry on with the state they had and the other side of the relay never
+learns anything happened. It needs an endpoint that opens a two-way stream and
+is refused on anything else.
+
+**A `keep` endpoint does not end on its own.** The direction reading it is
+reading a stream that reopens itself, so a peer that never closes cleanly means
+a relay that never finishes. That is correct for a reconnecting endpoint and it
+is also a way to leave something running forever by accident. Bound it with a
+[`timeout`](plugins/timeout.md) stage on both directions if the peer cannot be
+relied on to say when it is done.
+
+**`keep` preserves stage state, not the stream.** Bytes the kernel had accepted
+but not delivered are gone, and a write interrupted halfway leaves an unknowable
+prefix on the wire. A reconnect is a hole. Pair it with a stage that needs
+message boundaries, [`unframe`](plugins/frame.md) for instance, and that stage
+will resync on whatever follows the hole. `restart`, which gives every stage a
+clean start, is the safer default when the pipeline carries framing.
+
+A relay that reconnects logs each attempt at warn level, so one waiting for a
+server to come up says so rather than looking hung.
+
+### What is not here yet
+
+Under `fork` there is no per-connection restart. `reconnect=restart` is refused
+with `fork` because restarting reopens the whole relay, which would drop every
+other connection being served; `reconnect=keep` does work, since each connection
+reopens its own endpoint.
+
 ## `name`, which every scheme takes
 
 Every scheme accepts `name=TEXT`, which replaces the label the endpoint is known

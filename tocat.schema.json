@@ -442,6 +442,62 @@
             "256KiB"
           ]
         },
+        "retry": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "enum": [
+                "forever"
+              ]
+            }
+          ],
+          "description": "How many times to try opening this endpoint, counting the first. Absent is one attempt, which ends the run when it fails. Only failures count: a peer that closed cleanly has said it is finished.",
+          "examples": [
+            3,
+            "forever"
+          ]
+        },
+        "interval": {
+          "type": "string",
+          "description": "Between attempts. Fixed rather than backing off, because the usual reason to set it is waiting for a service to come up. Default 1s.",
+          "examples": [
+            "500ms",
+            "5s"
+          ]
+        },
+        "connect-timeout": {
+          "type": "string",
+          "description": "How long one attempt may take before it counts as failed. Without it, an address that blackholes packets waits on the kernel for minutes and retry never gets a turn.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "reconnect": {
+          "type": "string",
+          "enum": [
+            "none",
+            "restart",
+            "keep"
+          ],
+          "default": "none",
+          "description": "What to do when a connection that was working fails. none ends the run. restart reopens both endpoints and starts over with fresh plugin instances, as though the command had been rerun. keep reopens this endpoint underneath the pipeline, so the stages carry on with the state they had, at the cost of a hole in the byte stream. Not triggered by a clean end of stream.",
+          "examples": [
+            "restart",
+            "keep"
+          ]
+        },
+        "reconnect-delay": {
+          "type": "string",
+          "default": "500ms",
+          "description": "A floor on how often a reconnect may happen. Separate from interval, which waits between connects that failed; this waits between connections that worked and then did not. Not zero by default: a peer that accepts and immediately resets would otherwise be reconnected to as fast as a connect completes.",
+          "examples": [
+            "1s"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -740,6 +796,62 @@
             "256KiB"
           ]
         },
+        "retry": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "enum": [
+                "forever"
+              ]
+            }
+          ],
+          "description": "How many times to try opening this endpoint, counting the first. Absent is one attempt, which ends the run when it fails. Only failures count: a peer that closed cleanly has said it is finished.",
+          "examples": [
+            3,
+            "forever"
+          ]
+        },
+        "interval": {
+          "type": "string",
+          "description": "Between attempts. Fixed rather than backing off, because the usual reason to set it is waiting for a service to come up. Default 1s.",
+          "examples": [
+            "500ms",
+            "5s"
+          ]
+        },
+        "connect-timeout": {
+          "type": "string",
+          "description": "How long one attempt may take before it counts as failed. Without it, an address that blackholes packets waits on the kernel for minutes and retry never gets a turn.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "reconnect": {
+          "type": "string",
+          "enum": [
+            "none",
+            "restart",
+            "keep"
+          ],
+          "default": "none",
+          "description": "What to do when a connection that was working fails. none ends the run. restart reopens both endpoints and starts over with fresh plugin instances, as though the command had been rerun. keep reopens this endpoint underneath the pipeline, so the stages carry on with the state they had, at the cost of a hole in the byte stream. Not triggered by a clean end of stream.",
+          "examples": [
+            "restart",
+            "keep"
+          ]
+        },
+        "reconnect-delay": {
+          "type": "string",
+          "default": "500ms",
+          "description": "A floor on how often a reconnect may happen. Separate from interval, which waits between connects that failed; this waits between connections that worked and then did not. Not zero by default: a peer that accepts and immediately resets would otherwise be reconnected to as fast as a connect completes.",
+          "examples": [
+            "1s"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -866,6 +978,62 @@
             "@tocat"
           ]
         },
+        "retry": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "enum": [
+                "forever"
+              ]
+            }
+          ],
+          "description": "How many times to try opening this endpoint, counting the first. Absent is one attempt, which ends the run when it fails. Only failures count: a peer that closed cleanly has said it is finished.",
+          "examples": [
+            3,
+            "forever"
+          ]
+        },
+        "interval": {
+          "type": "string",
+          "description": "Between attempts. Fixed rather than backing off, because the usual reason to set it is waiting for a service to come up. Default 1s.",
+          "examples": [
+            "500ms",
+            "5s"
+          ]
+        },
+        "connect-timeout": {
+          "type": "string",
+          "description": "How long one attempt may take before it counts as failed. Without it, an address that blackholes packets waits on the kernel for minutes and retry never gets a turn.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "reconnect": {
+          "type": "string",
+          "enum": [
+            "none",
+            "restart",
+            "keep"
+          ],
+          "default": "none",
+          "description": "What to do when a connection that was working fails. none ends the run. restart reopens both endpoints and starts over with fresh plugin instances, as though the command had been rerun. keep reopens this endpoint underneath the pipeline, so the stages carry on with the state they had, at the cost of a hole in the byte stream. Not triggered by a clean end of stream.",
+          "examples": [
+            "restart",
+            "keep"
+          ]
+        },
+        "reconnect-delay": {
+          "type": "string",
+          "default": "500ms",
+          "description": "A floor on how often a reconnect may happen. Separate from interval, which waits between connects that failed; this waits between connections that worked and then did not. Not zero by default: a peer that accepts and immediately resets would otherwise be reconnected to as fast as a connect completes.",
+          "examples": [
+            "1s"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -930,6 +1098,34 @@
           "minimum": 1,
           "default": 1024,
           "description": "Maximum number of concurrent connections. Only applies when fork is true."
+        },
+        "backlog": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1024,
+          "description": "How deep the kernel queues connections this relay has not accepted yet. Not max-connections, which bounds how many are served at once: a short backlog refuses a burst of clients whether or not the relay would have reached them."
+        },
+        "linger": {
+          "type": "string",
+          "description": "How long close waits for unsent data. Zero discards it and closes with an RST, which tests a peer's error handling and loses the tail of a stream. Alias so-linger.",
+          "examples": [
+            "0s",
+            "5s"
+          ]
+        },
+        "recv-buffer": {
+          "type": "string",
+          "description": "Kernel receive buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias rcvbuf.",
+          "examples": [
+            "256KiB"
+          ]
+        },
+        "send-buffer": {
+          "type": "string",
+          "description": "Kernel send buffer for this socket. Not the relay's copy buffer, which is buffer-size. Alias sndbuf.",
+          "examples": [
+            "256KiB"
+          ]
         },
         "name": {
           "type": "string",
@@ -1242,6 +1438,62 @@
             ]
           ]
         },
+        "retry": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "enum": [
+                "forever"
+              ]
+            }
+          ],
+          "description": "How many times to try opening this endpoint, counting the first. Absent is one attempt, which ends the run when it fails. Only failures count: a peer that closed cleanly has said it is finished.",
+          "examples": [
+            3,
+            "forever"
+          ]
+        },
+        "interval": {
+          "type": "string",
+          "description": "Between attempts. Fixed rather than backing off, because the usual reason to set it is waiting for a service to come up. Default 1s.",
+          "examples": [
+            "500ms",
+            "5s"
+          ]
+        },
+        "connect-timeout": {
+          "type": "string",
+          "description": "How long one attempt may take before it counts as failed. Without it, an address that blackholes packets waits on the kernel for minutes and retry never gets a turn.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "reconnect": {
+          "type": "string",
+          "enum": [
+            "none",
+            "restart",
+            "keep"
+          ],
+          "default": "none",
+          "description": "What to do when a connection that was working fails. none ends the run. restart reopens both endpoints and starts over with fresh plugin instances, as though the command had been rerun. keep reopens this endpoint underneath the pipeline, so the stages carry on with the state they had, at the cost of a hole in the byte stream. Not triggered by a clean end of stream.",
+          "examples": [
+            "restart",
+            "keep"
+          ]
+        },
+        "reconnect-delay": {
+          "type": "string",
+          "default": "500ms",
+          "description": "A floor on how often a reconnect may happen. Separate from interval, which waits between connects that failed; this waits between connections that worked and then did not. Not zero by default: a peer that accepts and immediately resets would otherwise be reconnected to as fast as a connect completes.",
+          "examples": [
+            "1s"
+          ]
+        },
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
@@ -1266,6 +1518,62 @@
           "examples": [
             "echo $HOME",
             "cat"
+          ]
+        },
+        "retry": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "enum": [
+                "forever"
+              ]
+            }
+          ],
+          "description": "How many times to try opening this endpoint, counting the first. Absent is one attempt, which ends the run when it fails. Only failures count: a peer that closed cleanly has said it is finished.",
+          "examples": [
+            3,
+            "forever"
+          ]
+        },
+        "interval": {
+          "type": "string",
+          "description": "Between attempts. Fixed rather than backing off, because the usual reason to set it is waiting for a service to come up. Default 1s.",
+          "examples": [
+            "500ms",
+            "5s"
+          ]
+        },
+        "connect-timeout": {
+          "type": "string",
+          "description": "How long one attempt may take before it counts as failed. Without it, an address that blackholes packets waits on the kernel for minutes and retry never gets a turn.",
+          "examples": [
+            "5s"
+          ]
+        },
+        "reconnect": {
+          "type": "string",
+          "enum": [
+            "none",
+            "restart",
+            "keep"
+          ],
+          "default": "none",
+          "description": "What to do when a connection that was working fails. none ends the run. restart reopens both endpoints and starts over with fresh plugin instances, as though the command had been rerun. keep reopens this endpoint underneath the pipeline, so the stages carry on with the state they had, at the cost of a hole in the byte stream. Not triggered by a clean end of stream.",
+          "examples": [
+            "restart",
+            "keep"
+          ]
+        },
+        "reconnect-delay": {
+          "type": "string",
+          "default": "500ms",
+          "description": "A floor on how often a reconnect may happen. Separate from interval, which waits between connects that failed; this waits between connections that worked and then did not. Not zero by default: a peer that accepts and immediately resets would otherwise be reconnected to as fast as a connect completes.",
+          "examples": [
+            "1s"
           ]
         },
         "name": {

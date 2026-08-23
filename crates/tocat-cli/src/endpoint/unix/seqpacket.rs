@@ -38,6 +38,8 @@ use tracing::{debug, info, warn};
 use crate::endpoint::{
     Connection, EndpointStream,
     parse::{Opt, ParseEndpointError},
+    retry::Retry,
+    sockopt::{DEFAULT_BACKLOG, Family, SocketOptions},
     sys::Mode,
     unix::{SocketPath, apply_mode, unlink_stale},
 };
@@ -47,6 +49,8 @@ pub struct UnixSeqpacket {
     pub path: SocketPath,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(flatten)]
+    pub retry: Retry,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -62,6 +66,11 @@ pub struct UnixSeqpacketListen {
     pub unlink: bool,
     #[serde(default)]
     pub mode: Option<Mode>,
+    /// How deep the kernel's accept queue is. See [`DEFAULT_BACKLOG`].
+    #[serde(default)]
+    pub backlog: Option<NonZeroUsize>,
+    #[serde(flatten)]
+    pub options: SocketOptions,
 }
 
 impl UnixSeqpacket {
@@ -72,10 +81,12 @@ impl UnixSeqpacket {
         opts: impl Iterator<Item = Opt<'a>>,
     ) -> Result<Self, ParseEndpointError> {
         let mut name = None;
+        let mut retry = Retry::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
                 "name" => name = Some(opt.string()?),
+                _ if retry.option(&opt)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -83,6 +94,7 @@ impl UnixSeqpacket {
         Ok(Self {
             path: SocketPath::from_spec(body),
             name,
+            retry,
         })
     }
 
@@ -115,6 +127,8 @@ impl UnixSeqpacketListen {
         let mut max_connections = None;
         let mut unlink = false;
         let mut mode = None;
+        let mut backlog = None;
+        let mut options = SocketOptions::default();
 
         for opt in opts {
             match normalize(opt.key).as_str() {
@@ -122,9 +136,11 @@ impl UnixSeqpacketListen {
                 "maxconnections" | "maxconn" => {
                     max_connections = Some(opt.count()?);
                 }
+                "backlog" => backlog = Some(opt.count()?),
                 "mode" => mode = Some(opt.mode()?),
                 "name" => name = Some(opt.string()?),
                 "unlink" => unlink = opt.flag()?,
+                _ if options.option(&opt, Family::UnixStream)? => {}
                 _ => return Err(opt.unsupported(Self::SCHEME)),
             }
         }
@@ -136,6 +152,8 @@ impl UnixSeqpacketListen {
             max_connections,
             unlink,
             mode,
+            backlog,
+            options,
         })
     }
 
@@ -163,12 +181,34 @@ impl UnixSeqpacketListen {
             .await?;
         }
 
-        let listener = UnixSeqpacketListener::bind(self.path.as_path())
-            .with_context(|| format!("binding {}", self.path))?;
+        let listener =
+            UnixSeqpacketListener::bind_with_backlog(self.path.as_path(), self.backlog())
+                .with_context(|| format!("binding {}", self.path))?;
 
+        self.options.apply(&listener)?;
         apply_mode(&self.path, self.mode)?;
 
         Ok(listener)
+    }
+
+    /// How deep to let the kernel queue connections this relay has not yet
+    /// accepted.
+    ///
+    /// `bind_with_backlog` is why this scheme needs no hand built socket,
+    /// unlike `unix-listen`, whose tokio constructor fixes the number.
+    pub fn backlog(&self) -> std::ffi::c_int {
+        self.backlog
+            .map_or(DEFAULT_BACKLOG as std::ffi::c_int, |n| {
+                std::ffi::c_int::try_from(n.get()).unwrap_or(std::ffi::c_int::MAX)
+            })
+    }
+
+    /// Options an accepted connection carries, applied by whoever accepted it.
+    ///
+    /// A seqpacket socket takes the unix stream set: it has a connection to
+    /// linger over and buffers to size, and none of the TCP options.
+    pub fn accepted(&self, socket: &SeqpacketSocket) -> std::io::Result<()> {
+        self.options.apply(socket)
     }
 
     /// Bind and take a single peer.
@@ -177,6 +217,7 @@ impl UnixSeqpacketListen {
         let guard = self.path.guard();
         info!(path = %self.path, "listening");
         let socket = listener.accept().await?;
+        self.accepted(&socket)?;
 
         Ok(EndpointStream::seqpacket(socket).into_connection_with_guard(guard))
     }

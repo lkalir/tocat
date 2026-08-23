@@ -14,7 +14,9 @@ $ tocat unix-listen:/tmp/tocat.sock,fork,unlink,mode=660 tcp:localhost:8080
 | `name=TEXT`                 | Label for logs and dumps. Default `unix://path`                                                      |
 
 Plus `linger`, `recv-buffer` and `send-buffer` from the shared
-[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share).
+[socket options](../endpoints.md#socket-options-which-the-socket-schemes-share),
+and, on `unix` rather than `unix-listen`, the
+[resilience options](../endpoints.md#resilience-on-the-schemes-that-can-be-reopened).
 The TCP ones are refused here rather than ignored: a unix socket has no Nagle's
 algorithm, no keepalive and no address to hold in `TIME_WAIT`.
 

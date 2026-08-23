@@ -31,6 +31,13 @@ $ tocat tcp-listen:9000,fork "system:grep -v DEBUG | sort -u"
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | `name=TEXT` | Accepted, but the label stays `EXEC(argv)` or `SYSTEM(command)`: the command line is the identity |
 
+Both also take the
+[resilience options](../endpoints.md#resilience-on-the-schemes-that-can-be-reopened),
+since a child that fails to spawn can be spawned again. What they cannot do is
+give a respawned child the state the last one had: `reconnect=keep` preserves
+plugin state, not the process's. A respawned `cat` is fine; a respawned stateful
+filter starts over mid-stream.
+
 The child is killed when the relay drops the connection, and is reaped in the
 background: the relay ends when the pipes close rather than when the process
 does, and a non-zero exit is logged as a warning. That is the opposite of the
