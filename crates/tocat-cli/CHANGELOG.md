@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.2.1] - 2026-08-23
+
+### 🚀 Features
+
+- *(plugins)* Add encryption plugin
+- *(endpoints)* A queue endpoint an embedder can drive
+- *(endpoints)* Common socket options for socket endpoints
+- *(endpoints)* Endpoint reconnect options
+- *(endpoints)* Udp multicast support
+- *(endpoints)* Tls and major internal refactor for layers
+- *(endpoints)* Mutual tls
+- *(cli)* Dump fully resolved config when using --dump-config
+
+### 🚜 Refactor
+
+- *(cli)* Broke tocat into main and lib, added integration tests
+
+### 🧪 Testing
+
+- *(cli)* Cover unix, fork, udp, exec, and the sync path
 
 ## [0.2.0](https://github.com/lkalir/tocat/compare/tocat-v0.1.0...tocat-v0.2.0) - 2026-08-15
 
