@@ -61,7 +61,9 @@ jobs:
           purge-primary-key: never
 
       - name: Build the dev shell
-        run: nix develop .#ci --command bash -c 'dirname "$(command -v cargo)" >> "$GITHUB_PATH"'
+        run: |
+          # shellcheck disable=SC2016
+          nix develop .#ci --command bash -c 'dirname "$(command -v cargo)" >> "$GITHUB_PATH"'
 
       # rust-cache already keys on Cargo.lock; the extra key adds flake.lock, so
       # a toolchain bump invalidates compiled dependencies the same way a
@@ -92,7 +94,9 @@ jobs:
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: nix develop .#ci --command bash -euo pipefail -c 'printf "%s\n" "$PR_TITLE" | commitlint --verbose'
+        run: |
+          # shellcheck disable=SC2016
+          nix develop .#ci --command bash -euo pipefail -c 'printf "%s\n" "$PR_TITLE" | commitlint --verbose'
 
       - name: Check Rust formatting
         if: ${{ !cancelled() }}

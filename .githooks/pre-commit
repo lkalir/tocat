@@ -2,3 +2,4 @@
 
 dprint check
 cargo-nightly fmt --check
+actionlint

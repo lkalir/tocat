@@ -141,6 +141,7 @@
           mdbook
           commitlint
           dprint
+          actionlint
         ];
 
         devTools = with pkgs; [
