@@ -213,6 +213,53 @@ pub fn load_config(
     Ok((Config::default(), None))
 }
 
+/// What `--dump-config` prints: the configuration as the run will use it.
+///
+/// A view rather than [`Settings`] itself, for two reasons. Settings drops the
+/// logging fields, which a reader asking what this run will do still wants to
+/// see. And TOML requires every value before any table, so the field order here
+/// is load bearing: scalars, then the endpoints and the pipeline, which
+/// serialise as tables. Adding a scalar to the end of this struct produces a
+/// runtime error rather than a compile one.
+#[derive(Serialize)]
+struct Dump<'a> {
+    #[serde(rename = "log-level")]
+    log_level: &'a LogLevel,
+    #[serde(rename = "buffer-size")]
+    buffer_size: ByteSize,
+    progress: &'a ProgressMode,
+    log: &'a [LogSinkSpec],
+    source: &'a EndpointSpec,
+    sink: &'a EndpointSpec,
+    #[serde(rename = "plugin")]
+    plugins: &'a [PluginSpec],
+}
+
+/// Render the resolved configuration.
+///
+/// Resolved rather than merged: an endpoint written on the command line is a
+/// string until [`resolve`] parses it, and printing the string back answers a
+/// question nobody asked. What this prints is the composed form, so sugar like
+/// `tls:host:443` appears as the transport and the layer it stands for, and
+/// defaults appear as the values they took.
+pub fn dump(
+    settings: &Settings,
+    log_level: &LogLevel,
+    log: &[LogSinkSpec],
+) -> anyhow::Result<String> {
+    let dump = Dump {
+        log_level,
+        buffer_size: ByteSize(settings.buffer),
+        progress: &settings.progress,
+        log,
+        source: &settings.source,
+        sink: &settings.sink,
+        plugins: &settings.plugins,
+    };
+
+    Ok(toml::to_string(&dump)?)
+}
+
 pub fn resolve(config: Config) -> anyhow::Result<Settings> {
     fn spec(endpoint: Option<Endpoint>, field: &str) -> anyhow::Result<EndpointSpec> {
         let Some(endpoint) = endpoint else {

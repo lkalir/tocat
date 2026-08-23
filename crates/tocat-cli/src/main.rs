@@ -19,7 +19,7 @@ use std::{process::ExitCode, time::Duration};
 use clap::Parser;
 use tocat::{
     cli::Cli,
-    config::{load_config, resolve},
+    config::{dump, load_config, resolve},
     logging::{bootstrap_logging, init_logging},
     progress::{self, Progress},
     relay::Relay,
@@ -90,7 +90,15 @@ async fn start() -> anyhow::Result<ExitCode> {
     config.log_level = Some(level);
 
     if cli.dump_config {
-        println!("{}", toml::to_string(&config).unwrap());
+        // Resolving first is what makes this the configuration rather than the
+        // arguments: endpoints are parsed, sugar is composed and defaults are
+        // filled in. It also means an unparseable endpoint is reported here,
+        // which is the point of asking.
+        let log = std::mem::take(&mut config.log);
+        let settings = resolve(config)?;
+
+        print!("{}", dump(&settings, &level, &log)?);
+
         return Ok(ExitCode::SUCCESS);
     }
 
