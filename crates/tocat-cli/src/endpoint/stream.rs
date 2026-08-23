@@ -110,7 +110,12 @@ pub trait MessageSocket: Send + Sync {
 
     /// End of stream on the writing side, for an implementation that has one
     /// to send. The default is the connectionless behaviour: nothing to close.
-    fn finish(&self) {}
+    ///
+    /// Async because a close is not always a syscall: a WebSocket says goodbye
+    /// with a frame, which has to be written and flushed like any other.
+    fn finish<'a>(&'a self) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
 }
 
 /// A message endpoint, either a socket of its own or one peer's share of a
@@ -164,10 +169,10 @@ impl DatagramSocket {
     /// waits for our end of stream never hears one. The connectionless forms
     /// have nothing to close, which is the same reason they never see an end
     /// of stream either.
-    pub fn finish(&self) {
+    pub async fn finish(&self) {
         match self {
             DatagramSocket::Seqpacket(socket) => socket.finish(),
-            DatagramSocket::Boxed(socket) => socket.finish(),
+            DatagramSocket::Boxed(socket) => socket.finish().await,
             DatagramSocket::Udp(_) | DatagramSocket::UnixDgram(_) | DatagramSocket::Session(_) => {}
         }
     }

@@ -19,6 +19,7 @@
   - [unix and unix-listen](guide/endpoints/unix.md)
   - [unix-dgram and unix-dgram-listen](guide/endpoints/unix-dgram.md)
   - [unix-seqpacket and unix-seqpacket-listen](guide/endpoints/unix-seqpacket.md)
+  - [ws and wss](guide/endpoints/ws.md)
 - [Plugins](guide/plugins.md)
   - [base64 and unbase64](guide/plugins/base64.md)
   - [block](guide/plugins/block.md)

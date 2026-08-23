@@ -245,7 +245,9 @@ impl MessageSocket for Queue {
         })
     }
 
-    fn finish(&self) {
+    fn finish<'a>(&'a self) -> BoxFuture<'a, ()> {
         drop(self.tx.lock().expect("channel sender").take());
+
+        Box::pin(async {})
     }
 }

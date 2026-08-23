@@ -352,8 +352,40 @@
       "oneOf": [
         {
           "$ref": "#/$defs/tls-layer"
+        },
+        {
+          "$ref": "#/$defs/ws-layer"
         }
       ]
+    },
+    "ws-layer": {
+      "title": "ws",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ws"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "default": "/",
+          "description": "The resource. The same value on both sides: asked for when dialling, required when accepting, so a listener answers any other path with a 404 rather than upgrading it. The query string is not compared.",
+          "examples": [
+            "/socket"
+          ]
+        },
+        "text": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send text frames rather than binary. A text frame promises valid UTF-8 and tocat cannot know whether the relayed bytes are text, so this is a promise the operator makes: a message that is not valid UTF-8 fails the run. Received frames are unaffected."
+        }
+      }
     },
     "tls-layer": {
       "title": "tls",

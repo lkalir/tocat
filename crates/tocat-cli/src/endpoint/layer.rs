@@ -25,16 +25,21 @@
 //! one below it produced.
 
 mod tls;
+pub(in crate::endpoint) mod ws;
 
 use serde::{Deserialize, Serialize};
 
-pub use self::tls::{ClientAuth, Tls, Verify};
+pub use self::{
+    tls::{ClientAuth, Tls, Verify},
+    ws::Ws,
+};
 use crate::endpoint::EndpointStream;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LayerSpec {
     Tls(Tls),
+    Ws(Ws),
 }
 
 impl LayerSpec {
@@ -45,6 +50,9 @@ impl LayerSpec {
     pub(in crate::endpoint) fn is_datagram(&self, _below: bool) -> bool {
         match self {
             LayerSpec::Tls(_) => false,
+            // Preserve: one message in is one message out, which is the whole
+            // reason to put this over a byte transport.
+            LayerSpec::Ws(_) => true,
         }
     }
 
@@ -56,6 +64,7 @@ impl LayerSpec {
     ) -> anyhow::Result<()> {
         match self {
             LayerSpec::Tls(tls) => tls.check(below_is_datagram, listening),
+            LayerSpec::Ws(ws) => ws.check(below_is_datagram),
         }
     }
 
@@ -68,6 +77,7 @@ impl LayerSpec {
     ) -> anyhow::Result<EndpointStream> {
         match self {
             LayerSpec::Tls(tls) => tls.wrap_client(stream, host).await,
+            LayerSpec::Ws(ws) => ws.wrap_client(stream, host).await,
         }
     }
 
@@ -78,6 +88,7 @@ impl LayerSpec {
     ) -> anyhow::Result<EndpointStream> {
         match self {
             LayerSpec::Tls(tls) => tls.wrap_server(stream).await,
+            LayerSpec::Ws(ws) => ws.wrap_server(stream).await,
         }
     }
 }

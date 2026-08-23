@@ -75,7 +75,7 @@ pub use self::{
     datagram::Demux,
     exec::{Exec, System},
     file::File,
-    layer::{ClientAuth, LayerSpec, Tls, Verify},
+    layer::{ClientAuth, LayerSpec, Tls, Verify, Ws},
     parse::ParseEndpointError,
     pipe::Pipe,
     pty::{Pty, PtyExec},
@@ -119,7 +119,10 @@ const DEFAULT_MAX_CONNECTIONS: NonZeroUsize = NonZeroUsize::new(1024).unwrap();
 // they live only until the config is resolved. Boxing would trade a stack cost
 // nobody pays for a heap allocation and an indirection. Revisit if a spec ever
 // ends up in a collection, which is what the lint is actually for.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "There are two of these per run, so one being huge is no big deal"
+)]
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Endpoint {

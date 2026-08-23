@@ -40,8 +40,8 @@ socat. The currently supported sources and sinks are
 - [x] unix-dgram-listen
 - [x] unix-seqpacket
 - [x] unix-seqpacket-listen
-- [ ] websocket
-- [ ] websocket-listen
+- [x] websocket
+- [x] websocket-listen
 
 The plugins that ship with tocat are
 

@@ -448,7 +448,7 @@ async fn run_process(
                 // The child's stdout closing is this path's end of stream, and
                 // a connected message sink has one to pass on. Same call the
                 // stream arm below makes for the same reason.
-                socket.finish();
+                socket.finish().await;
             }
             Downstream::Stream(WriteHalf::Stream(mut writer)) => {
                 let mut stdout = BufReader::with_capacity(buffer, stdout);
@@ -689,7 +689,7 @@ impl Dest {
                 writer.flush().await?;
                 let _ = writer.shutdown().await;
             }
-            Dest::Datagram(socket) => socket.finish(),
+            Dest::Datagram(socket) => socket.finish().await,
             Dest::Link(outlet) => drop(outlet),
         }
 

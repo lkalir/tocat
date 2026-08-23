@@ -19,10 +19,11 @@ use tocat_api::normalize;
 use crate::{
     config::ByteSize,
     endpoint::{
-        EndpointSpec, LayerSpec, Tls, Transport,
+        EndpointSpec, LayerSpec, Tls, Transport, Ws,
         chan::Chan,
         exec::{Exec, System},
         file::File,
+        layer::ws::split_path,
         pipe::Pipe,
         pty::{Pty, PtyExec},
         stdio::Stdio,
@@ -56,6 +57,22 @@ fn split_tls<'a>(
     }
 
     Ok((rest, tls))
+}
+
+/// The same as [split_tls], for the WebSocket layer
+fn split_ws<'a>(
+    opts: impl Iterator<Item = Opt<'a>>,
+) -> Result<(Vec<Opt<'a>>, Ws), ParseEndpointError> {
+    let mut ws = Ws::default();
+    let mut rest = Vec::new();
+
+    for opt in opts {
+        if !ws.option(&opt)? {
+            rest.push(opt);
+        }
+    }
+
+    Ok((rest, ws))
 }
 
 #[derive(Debug, PartialEq)]
@@ -265,6 +282,44 @@ impl std::str::FromStr for EndpointSpec {
             | "seqpacketlisten"
             | "seqpktlisten" => {
                 UnixSeqpacketListen::parse(body, opts).map(Transport::UnixSeqpacketListen)
+            }
+            "ws" | "websocket" => {
+                let (addr, path) = split_path(body);
+                let (rest, mut ws) = split_ws(opts)?;
+                ws.path = ws.path.or_else(|| path.map(|p| p.to_owned()));
+                layers.push(LayerSpec::Ws(ws));
+
+                Tcp::parse(addr, rest.into_iter()).map(Transport::Tcp)
+            }
+            "wslisten" | "websocketlisten" => {
+                let (addr, path) = split_path(body);
+                let (rest, mut ws) = split_ws(opts)?;
+                ws.path = ws.path.or_else(|| path.map(|p| p.to_owned()));
+                layers.push(LayerSpec::Ws(ws));
+
+                TcpListen::parse(addr, rest.into_iter()).map(Transport::TcpListen)
+            }
+            "wss" | "websockets" => {
+                let (addr, path) = split_path(body);
+                let (rest, tls) = split_tls(opts.collect::<Vec<_>>().into_iter())?;
+                let (rest, mut ws) = split_ws(rest.into_iter())?;
+                ws.path = ws.path.or_else(|| path.map(|p| p.to_owned()));
+
+                layers.push(LayerSpec::Tls(tls));
+                layers.push(LayerSpec::Ws(ws));
+
+                Tcp::parse(addr, rest.into_iter()).map(Transport::Tcp)
+            }
+            "wsslisten" | "websocketslisten" => {
+                let (addr, path) = split_path(body);
+                let (rest, tls) = split_tls(opts.collect::<Vec<_>>().into_iter())?;
+                let (rest, mut ws) = split_ws(rest.into_iter())?;
+                ws.path = ws.path.or_else(|| path.map(|p| p.to_owned()));
+
+                layers.push(LayerSpec::Tls(tls));
+                layers.push(LayerSpec::Ws(ws));
+
+                TcpListen::parse(addr, rest.into_iter()).map(Transport::TcpListen)
             }
             other => Err(Self::Err::UnknownScheme(other.to_owned())),
         }?;
