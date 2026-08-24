@@ -22,9 +22,9 @@ socat. The currently supported sources and sinks are
 - [x] exec
 - [x] file
 - [x] pipe / fifo
-- [ ] proxy
+- [x] proxy (HTTP CONNECT)
 - [x] pty
-- [ ] socks
+- [x] socks5
 - [x] stdio
 - [x] system
 - [x] tcp

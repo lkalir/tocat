@@ -27,7 +27,13 @@
 //! self-signed certificate has a stable fingerprint, and pinning it is a real
 //! check rather than the absence of one.
 
-use std::{fs::File, io::BufReader, sync::Arc};
+use std::{
+    fs::File,
+    io::BufReader,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use anyhow::{Context as _, bail};
 use rustls::{
@@ -41,6 +47,7 @@ use rustls::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tocat_api::normalize;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::warn;
 
@@ -221,7 +228,7 @@ impl Tls {
             .await
             .with_context(|| format!("tls handshake with {name}"))?;
 
-        Ok(EndpointStream::Duplex(Box::new(tls)))
+        Ok(EndpointStream::Duplex(Box::new(Closing(tls))))
     }
 
     /// Wrap a connection this relay accepted.
@@ -241,7 +248,7 @@ impl Tls {
             .await
             .context("tls handshake with client")?;
 
-        Ok(EndpointStream::Duplex(Box::new(tls)))
+        Ok(EndpointStream::Duplex(Box::new(Closing(tls))))
     }
 
     fn client_config(&self) -> anyhow::Result<ClientConfig> {
@@ -532,5 +539,58 @@ fn verify(opt: &Opt<'_>) -> Result<Verify, ParseEndpointError> {
         other => Err(ParseEndpointError::InvalidFlag(format!(
             "verify={other}, which is peer or none",
         ))),
+    }
+}
+
+/// A TLS stream that treats a peer hanging up as end of stream.
+///
+/// rustls reports a connection that closes without `close_notify` as an error,
+/// because a reader that cares about truncation cannot otherwise tell a
+/// complete response from a cut one. That is the right default for an
+/// application. It is the wrong one for a relay: tocat has no idea how long the
+/// peer's response was supposed to be, so it cannot check, and an HTTP/1.1
+/// server that has sent its `Content-Length` and closed has done nothing wrong.
+/// Reporting that as a failed run turns an ordinary request into an error.
+///
+/// Anything that does care about truncation is running above tocat and can
+/// check the lengths itself, which is the only place the check can be made
+/// honestly.
+///
+/// Only reads are affected. A write to a closed connection is still an error,
+/// and so is every other TLS failure.
+struct Closing<S>(S);
+
+impl<S: AsyncRead + Unpin> AsyncRead for Closing<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match Pin::new(&mut self.0).poll_read(cx, buf) {
+            // Nothing was read into `buf` in this case, so returning `Ok`
+            // leaves it empty, which is exactly how end of stream is spelled.
+            Poll::Ready(Err(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Closing<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
     }
 }

@@ -24,12 +24,17 @@
 //! `[Tls, Ws]`, so `wrap_client` runs in order and each layer wraps what the
 //! one below it produced.
 
+pub(in crate::endpoint) mod proxy;
+pub(in crate::endpoint) mod socks;
 mod tls;
 pub(in crate::endpoint) mod ws;
 
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 
 pub use self::{
+    proxy::Proxy,
+    socks::Socks,
     tls::{ClientAuth, Tls, Verify},
     ws::Ws,
 };
@@ -38,6 +43,9 @@ use crate::endpoint::EndpointStream;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LayerSpec {
+    Proxy(Proxy),
+    #[serde(rename = "socks5")]
+    Socks(Socks),
     Tls(Tls),
     Ws(Ws),
 }
@@ -47,12 +55,27 @@ impl LayerSpec {
     ///
     /// TLS is `Fuse`: a record is not a message, so whatever was underneath,
     /// what comes out is a byte stream.
-    pub(in crate::endpoint) fn is_datagram(&self, _below: bool) -> bool {
+    pub(in crate::endpoint) fn is_datagram(&self, below: bool) -> bool {
         match self {
+            // A tunnel is transparent: what comes out is what went in.
+            LayerSpec::Proxy(_) | LayerSpec::Socks(_) => below,
             LayerSpec::Tls(_) => false,
             // Preserve: one message in is one message out, which is the whole
             // reason to put this over a byte transport.
             LayerSpec::Ws(_) => true,
+        }
+    }
+
+    /// Who the layers above this one are talking to.
+    ///
+    /// Everything passes the host through except a tunnel: above a CONNECT the
+    /// peer is the target, not the proxy the transport dialled. A certificate
+    /// checked against the proxy would pass and prove nothing.
+    pub(in crate::endpoint) fn host_above(&self, below: String) -> String {
+        match self {
+            LayerSpec::Proxy(proxy) => target_host(&proxy.target),
+            LayerSpec::Socks(socks) => target_host(&socks.target),
+            LayerSpec::Tls(_) | LayerSpec::Ws(_) => below,
         }
     }
 
@@ -63,6 +86,8 @@ impl LayerSpec {
         listening: bool,
     ) -> anyhow::Result<()> {
         match self {
+            LayerSpec::Proxy(proxy) => proxy.check(below_is_datagram, listening),
+            LayerSpec::Socks(socks) => socks.check(below_is_datagram, listening),
             LayerSpec::Tls(tls) => tls.check(below_is_datagram, listening),
             LayerSpec::Ws(ws) => ws.check(below_is_datagram),
         }
@@ -76,6 +101,8 @@ impl LayerSpec {
         host: &str,
     ) -> anyhow::Result<EndpointStream> {
         match self {
+            LayerSpec::Proxy(proxy) => proxy.wrap_client(stream).await,
+            LayerSpec::Socks(socks) => socks.wrap_client(stream).await,
             LayerSpec::Tls(tls) => tls.wrap_client(stream, host).await,
             LayerSpec::Ws(ws) => ws.wrap_client(stream, host).await,
         }
@@ -87,8 +114,22 @@ impl LayerSpec {
         stream: EndpointStream,
     ) -> anyhow::Result<EndpointStream> {
         match self {
+            LayerSpec::Proxy(_) | LayerSpec::Socks(_) => {
+                bail!("a proxy layer cannot accept a connection")
+            }
             LayerSpec::Tls(tls) => tls.wrap_server(stream).await,
             LayerSpec::Ws(ws) => ws.wrap_server(stream).await,
         }
     }
+}
+
+/// The host half of a `host:port` target, for the layers that reroute.
+///
+/// A bare name with no port comes back unchanged rather than being rejected
+/// here: `check` has already refused an empty target, and a malformed one is
+/// the connect's error to report with the context it has.
+fn target_host(target: &str) -> String {
+    target
+        .rsplit_once(':')
+        .map_or_else(|| target.to_owned(), |(host, _)| host.to_owned())
 }

@@ -351,6 +351,12 @@
       "description": "A handshake over a byte stream. Only stream transports can carry one: a layer over udp or a datagram socket is refused before anything is opened.",
       "oneOf": [
         {
+          "$ref": "#/$defs/proxy-layer"
+        },
+        {
+          "$ref": "#/$defs/socks5-layer"
+        },
+        {
           "$ref": "#/$defs/tls-layer"
         },
         {
@@ -384,6 +390,85 @@
           "type": "boolean",
           "default": false,
           "description": "Send text frames rather than binary. A text frame promises valid UTF-8 and tocat cannot know whether the relayed bytes are text, so this is a promise the operator makes: a message that is not valid UTF-8 fails the run. Received frames are unaffected."
+        }
+      }
+    },
+    "proxy-layer": {
+      "title": "proxy",
+      "type": "object",
+      "description": "An HTTP CONNECT tunnel. The transport dials the proxy; this carries the destination. Client only: a listening endpoint has nobody to ask for a tunnel.",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "target"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "proxy"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "description": "Where the tunnel goes, as host:port. The sugared form proxy:proxyhost:port:targethost:port sets this.",
+          "examples": [
+            "api.example.com:443"
+          ]
+        },
+        "proxy-auth": {
+          "type": "string",
+          "description": "Credentials as user:password. --dump-config prints what it is given, so a password written here appears in a dump; the file and environment forms exist for that reason. Naming more than one source is an error."
+        },
+        "proxy-auth-file": {
+          "type": "string",
+          "description": "Credentials from a file, trailing newline ignored."
+        },
+        "proxy-auth-env": {
+          "type": "string",
+          "description": "Credentials from the named environment variable."
+        }
+      }
+    },
+    "socks5-layer": {
+      "title": "socks5",
+      "type": "object",
+      "description": "A SOCKS5 route. As the proxy layer, except that the target is sent as a name so the proxy resolves it, and refusals arrive with a reason. SOCKS4a is not supported, and neither is UDP association or BIND.",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "target"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "socks5"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "description": "Where the route goes, as host:port. The sugared form socks5:proxyhost:port:targethost:port sets this.",
+          "examples": [
+            "api.example.com:443"
+          ]
+        },
+        "proxy-auth": {
+          "type": "string",
+          "description": "Credentials as user:password. --dump-config prints what it is given, so a password written here appears in a dump; the file and environment forms exist for that reason. Naming more than one source is an error."
+        },
+        "proxy-auth-file": {
+          "type": "string",
+          "description": "Credentials from a file, trailing newline ignored."
+        },
+        "proxy-auth-env": {
+          "type": "string",
+          "description": "Credentials from the named environment variable."
+        },
+        "resolve-locally": {
+          "type": "boolean",
+          "default": false,
+          "description": "Resolve the target here rather than sending its name to the proxy. Off by default, which is the point of SOCKS: a name only the proxy's network can resolve still works, and no lookup for it happens locally."
         }
       }
     },

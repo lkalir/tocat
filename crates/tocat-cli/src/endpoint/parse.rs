@@ -19,11 +19,11 @@ use tocat_api::normalize;
 use crate::{
     config::ByteSize,
     endpoint::{
-        EndpointSpec, LayerSpec, Tls, Transport, Ws,
+        EndpointSpec, LayerSpec, Proxy, Socks, Tls, Transport, Ws,
         chan::Chan,
         exec::{Exec, System},
         file::File,
-        layer::ws::split_path,
+        layer::{proxy::split_target, ws::split_path},
         pipe::Pipe,
         pty::{Pty, PtyExec},
         stdio::Stdio,
@@ -73,6 +73,38 @@ fn split_ws<'a>(
     }
 
     Ok((rest, ws))
+}
+
+/// The same as [split_tls], for the PROXY layer
+fn split_proxy<'a>(
+    opts: impl Iterator<Item = Opt<'a>>,
+) -> Result<(Vec<Opt<'a>>, Proxy), ParseEndpointError> {
+    let mut proxy = Proxy::default();
+    let mut rest = Vec::new();
+
+    for opt in opts {
+        if !proxy.option(&opt)? {
+            rest.push(opt);
+        }
+    }
+
+    Ok((rest, proxy))
+}
+
+/// The same as [split_tls], for the SOCKS5 layer
+fn split_socks<'a>(
+    opts: impl Iterator<Item = Opt<'a>>,
+) -> Result<(Vec<Opt<'a>>, Socks), ParseEndpointError> {
+    let mut socks = Socks::default();
+    let mut rest = Vec::new();
+
+    for opt in opts {
+        if !socks.option(&opt)? {
+            rest.push(opt);
+        }
+    }
+
+    Ok((rest, socks))
 }
 
 #[derive(Debug, PartialEq)]
@@ -242,8 +274,38 @@ impl std::str::FromStr for EndpointSpec {
             "exec" => Exec::parse(body, opts).map(Transport::Exec),
             "file" | "open" => File::parse(body, opts).map(Transport::File),
             "pipe" | "fifo" => Pipe::parse(body, opts).map(Transport::Pipe),
+            "proxy" | "proxyconnect" | "httpproxy" => {
+                let Some((addr, target)) = split_target(body) else {
+                    return Err(ParseEndpointError::Empty);
+                };
+
+                let (rest, mut proxy) = split_proxy(opts)?;
+
+                if proxy.target.is_empty() {
+                    proxy.target = target.to_owned();
+                }
+
+                layers.push(LayerSpec::Proxy(proxy));
+
+                Tcp::parse(addr, rest.into_iter()).map(Transport::Tcp)
+            }
             "pty" => Pty::parse(body, opts).map(Transport::Pty),
             "ptyexec" => PtyExec::parse(body, opts).map(Transport::PtyExec),
+            "socks5" | "socks" => {
+                let Some((addr, target)) = split_target(body) else {
+                    return Err(ParseEndpointError::Empty);
+                };
+
+                let (rest, mut socks) = split_socks(opts)?;
+
+                if socks.target.is_empty() {
+                    socks.target = target.to_owned();
+                }
+
+                layers.push(LayerSpec::Socks(socks));
+
+                Tcp::parse(addr, rest.into_iter()).map(Transport::Tcp)
+            }
             "stdio" => Stdio::parse(body, opts).map(Transport::Stdio),
             "system" => System::parse(body, opts).map(Transport::System),
             "tcp" | "tcpconnect" | "connect" => Tcp::parse(body, opts).map(Transport::Tcp),

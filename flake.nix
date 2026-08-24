@@ -161,6 +161,8 @@
           tcpdump
           socat
           netcat-gnu
+          mitmproxy
+          microsocks
 
           tombi
           pv

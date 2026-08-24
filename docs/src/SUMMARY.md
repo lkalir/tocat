@@ -10,6 +10,7 @@
   - [exec and system](guide/endpoints/exec.md)
   - [file](guide/endpoints/file.md)
   - [pipe](guide/endpoints/pipe.md)
+  - [proxy and socks5](guide/endpoints/proxy.md)
   - [pty and pty-exec](guide/endpoints/pty.md)
   - [stdio](guide/endpoints/stdio.md)
   - [tcp and tcp-listen](guide/endpoints/tcp.md)

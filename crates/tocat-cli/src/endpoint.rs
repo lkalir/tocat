@@ -75,7 +75,7 @@ pub use self::{
     datagram::Demux,
     exec::{Exec, System},
     file::File,
-    layer::{ClientAuth, LayerSpec, Tls, Verify, Ws},
+    layer::{ClientAuth, LayerSpec, Proxy, Socks, Tls, Verify, Ws},
     parse::ParseEndpointError,
     pipe::Pipe,
     pty::{Pty, PtyExec},
@@ -249,7 +249,10 @@ impl EndpointSpec {
             return Ok(stream);
         }
 
-        let host = self.transport.host().unwrap_or_default().to_owned();
+        // Threaded rather than fixed: a proxy changes who the layers above it
+        // are talking to, and a certificate checked against the proxy instead of the
+        // target would pass while proving nothing.
+        let mut host = self.transport.host().unwrap_or_default().to_owned();
         let mut stream = stream;
 
         for layer in &self.layers {
@@ -258,6 +261,8 @@ impl EndpointSpec {
             } else {
                 layer.wrap_client(stream, &host).await?
             };
+
+            host = layer.host_above(host);
         }
 
         Ok(stream)
