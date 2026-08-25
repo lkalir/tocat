@@ -59,7 +59,7 @@ pub use crate::{
         Boundaries, BuildCtx, Ctx, EffectSink, Emission, Emit, Execution, ExternalStage, LogLevel,
         Needs, PipelineMeta, Plugin, PluginFactory, Stage, StageInfo, StderrMode,
     },
-    size::{ByteSize, ParseSizeError},
+    size::{ByteSize, ParseSizeError, Ratio},
 };
 
 /// One of the two byte paths through the relay.

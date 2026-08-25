@@ -7,7 +7,10 @@
 
 use std::{fmt, str::FromStr};
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, Visitor},
+};
 
 /// A byte count.
 ///
@@ -23,7 +26,7 @@ impl ByteSize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseSizeError(String);
+pub struct ParseSizeError(pub String);
 
 impl fmt::Display for ParseSizeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -108,6 +111,110 @@ impl<'de> Deserialize<'de> for ByteSize {
             Raw::Bytes(n) => Ok(ByteSize(n)),
             Raw::Text(s) => s.parse().map_err(D::Error::custom),
         }
+    }
+}
+
+/// A proportion, written the three ways people write one.
+///
+/// `0.25`, `25%` and `1/4` are the same number. The fraction form exists
+/// because a rate is often thought of as "one in N", and writing that as a
+/// decimal is a conversion the person should not have to do.
+///
+/// Unbounded on purpose: this is a number, not a probability, and what counts
+/// as a valid range depends on what is being scaled. A caller that needs one
+/// between zero and one checks for itself and says so in its own words.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Ratio(pub f64);
+
+impl Ratio {
+    pub fn value(self) -> f64 {
+        self.0
+    }
+}
+
+impl fmt::Display for Ratio {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Ratio {
+    type Err = ParseSizeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let text = s.trim();
+
+        let number = |part: &str| {
+            part.trim()
+                .parse::<f64>()
+                .map_err(|_| ParseSizeError(format!("invalid ratio: {s}")))
+        };
+
+        let value = if let Some(percent) = text.strip_suffix('%') {
+            number(percent)? / 100.0
+        } else if let Some((num, den)) = text.split_once('/') {
+            let den = number(den)?;
+
+            if den == 0.0 {
+                return Err(ParseSizeError(format!("{s} divides by zero")));
+            }
+
+            number(num)? / den
+        } else {
+            number(text)?
+        };
+
+        // Neither is a proportion of anything, and both would propagate into
+        // arithmetic that silently produces nonsense rather than failing.
+        if !value.is_finite() {
+            return Err(ParseSizeError(format!("{s} is not a finite ratio")));
+        }
+
+        Ok(Ratio(value))
+    }
+}
+
+impl Serialize for Ratio {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(self.0)
+    }
+}
+
+/// Accepts what a config file or a command line naturally holds: a float, an
+/// integer, or any of the three written forms.
+struct RatioVisitor;
+
+impl<'de> Visitor<'de> for RatioVisitor {
+    type Value = Ratio;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a ratio, as 0.25, \"25%\" or \"1/4\"")
+    }
+
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<Ratio, E> {
+        if !value.is_finite() {
+            return Err(E::custom(format!("{value} is not a finite ratio")));
+        }
+
+        Ok(Ratio(value))
+    }
+
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Ratio, E> {
+        Ok(Ratio(value as f64))
+    }
+
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Ratio, E> {
+        Ok(Ratio(value as f64))
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Ratio, E> {
+        value.parse().map_err(E::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ratio {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(RatioVisitor)
     }
 }
 

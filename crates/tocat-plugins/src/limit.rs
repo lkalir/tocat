@@ -86,7 +86,7 @@
 
 use serde::{Deserialize, Serialize};
 use tocat_api::{
-    Boundaries, BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Result, Stage,
+    Boundaries, BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Ratio, Result, Stage,
 };
 
 pub const NAME: &str = "limit";
@@ -114,6 +114,155 @@ impl AtLimit {
     }
 }
 
+/// A limit, either written down or drawn.
+///
+/// Three spellings, all resolved to a `u64` before the counting code sees
+/// anything, so the hot path is the same whichever was written:
+///
+/// * `bytes=1MiB`, a number someone chose.
+/// * `bytes=1KiB..1MiB`, uniform in a window. For when the stop has to happen
+///   and has to be somewhere in particular.
+/// * `bytes=25%`, a rate: the chance of stopping at each byte. For when the
+///   property under test is "does anything break if this ends at an arbitrary
+///   point", run many times, where a short stream often finishing untouched is
+///   correct rather than a miss.
+///
+/// A rate is per **byte**, not per chunk, which is what makes it independent of
+/// how the peer happened to write and of `-b`: four transfers of one byte and
+/// one transfer of four behave identically under the same seed. A per chunk
+/// roll would not, and a stopping point that moves with the buffer size cannot
+/// be replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Cap {
+    /// A count, in the size grammar: `4096`, `1MiB`.
+    Fixed(ByteSize),
+    /// A range, as `MIN..MAX`, inclusive at both ends.
+    Between(Between),
+    /// A per byte probability: `25%`, `1/4`, `0.25`.
+    Rate(Ratio),
+}
+
+/// `MIN..MAX`, in the same grammar as a fixed cap.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Between {
+    pub min: ByteSize,
+    pub max: ByteSize,
+}
+
+impl<'de> Deserialize<'de> for Between {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        let raw = String::deserialize(deserializer)?;
+
+        let (min, max) = raw
+            .split_once("..")
+            .ok_or_else(|| D::Error::custom(format!("{raw} is not MIN..MAX")))?;
+
+        Ok(Self {
+            min: min.trim().parse().map_err(D::Error::custom)?,
+            max: max.trim().parse().map_err(D::Error::custom)?,
+        })
+    }
+}
+
+/// SplitMix64: eight lines, and reproducible across releases of anything.
+///
+/// A general purpose generator would be a dependency and, more to the point,
+/// gives no promise that a seed produces the same sequence next year. A test
+/// tool whose seeds stop replaying is worse than one with no seeds, so the
+/// generator is written down here where it cannot drift.
+fn draw(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+
+    z ^ (z >> 31)
+}
+
+/// The offset a per byte rate stops at.
+///
+/// Rolling once per byte and drawing the offset once are the same
+/// distribution, and the second is O(1) rather than O(bytes): a coin flipped
+/// until it lands is geometric, so one uniform gives how many bytes pass first.
+/// That keeps the copy path exactly as it is, which is the point, since the
+/// alternative is a random number per byte on the hot path.
+///
+/// `p` at or above one stops before anything passes, which is the reading that
+/// matches the formula: the probability is of stopping *at* a byte, so
+/// certainty stops at the first. A `p` small enough to overflow saturates,
+/// which is "effectively never" and is the honest answer for it.
+fn geometric(p: f64, seed: u64) -> u64 {
+    if p >= 1.0 {
+        return 0;
+    }
+
+    // Uniform in (0, 1]: the shift takes the top 53 bits, and the offset keeps
+    // it off zero so the logarithm stays finite.
+    let uniform = ((draw(seed) >> 11) as f64 + 1.0) / (1u64 << 53) as f64;
+    let n = uniform.ln() / (1.0 - p).ln();
+
+    if n.is_finite() && n < u64::MAX as f64 {
+        n as u64
+    } else {
+        u64::MAX
+    }
+}
+
+impl Cap {
+    /// The number to count to, and the seed it came from if it was drawn.
+    ///
+    /// The seed is reported so that the halt message can carry it: a run that
+    /// stopped somewhere interesting is only useful if the next run can stop
+    /// there too.
+    fn resolve(self, seed: Option<u64>) -> Result<(u64, Option<u64>), PluginError> {
+        let range = match self {
+            Cap::Fixed(size) => return Ok((size.bytes() as u64, None)),
+            Cap::Between(range) => Some(range),
+            Cap::Rate(_) => None,
+        };
+
+        // Without one, a seed is taken from the clock and reported, so an
+        // unseeded run is still replayable after the fact.
+        let seed = seed.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos() as u64)
+        });
+
+        let Some(range) = range else {
+            let Cap::Rate(rate) = self else {
+                unreachable!()
+            };
+            let p = rate.value();
+
+            if !(0.0..=1.0).contains(&p) {
+                return Err(PluginError::config(
+                    NAME,
+                    format!("{p} is not a probability: give a rate between 0% and 100%"),
+                ));
+            }
+
+            return Ok((geometric(p, seed), Some(seed)));
+        };
+
+        let min = range.min.bytes() as u64;
+        let max = range.max.bytes() as u64;
+
+        if min > max {
+            return Err(PluginError::config(
+                NAME,
+                format!("{min}..{max} is empty: the minimum is above the maximum"),
+            ));
+        }
+
+        let span = max - min + 1;
+
+        Ok((min + draw(seed) % span, Some(seed)))
+    }
+}
+
 /// Every option optional, and which combinations are legal settled in
 /// `LimitFactory::build` rather than by the shape of this type.
 ///
@@ -129,7 +278,7 @@ impl AtLimit {
 pub struct LimitConfig {
     /// How many bytes to let past before ending the stream.
     #[serde(alias = "max", alias = "size")]
-    pub bytes: Option<ByteSize>,
+    pub bytes: Option<Cap>,
 
     /// How many `on_bytes` calls to let past before ending the stream.
     ///
@@ -139,7 +288,11 @@ pub struct LimitConfig {
     /// cap is reported as the plain number it is, since `ByteSize`'s own
     /// `Display` would announce a packet limit in kibibytes.
     #[serde(alias = "chunks", alias = "messages")]
-    pub packets: Option<ByteSize>,
+    pub packets: Option<Cap>,
+
+    /// The seed for a drawn cap. Ignored by a fixed one, and refused with it,
+    /// since a seed that does nothing reads as a setting that does.
+    pub seed: Option<u64>,
 
     /// What to do with the chunk that crosses a byte limit.
     ///
@@ -158,10 +311,14 @@ enum LimitKind {
         cap: u64,
         seen: u64,
         at_limit: AtLimit,
+        /// `Some` when the cap was drawn, and only so the halt message can say
+        /// how to reproduce it.
+        seed: Option<u64>,
     },
     Packets {
         cap: u64,
         seen: u64,
+        seed: Option<u64>,
     },
 }
 
@@ -180,17 +337,28 @@ impl Limit {
     fn stop(&mut self, ctx: &mut Ctx<'_>) {
         self.stopped = true;
 
-        let reason = match &self.kind {
-            LimitKind::Bytes { cap, seen, .. } => format!(
-                "limit of {} reached at {}",
-                ByteSize(*cap as usize),
-                ByteSize(*seen as usize),
+        let (reason, seed) = match &self.kind {
+            LimitKind::Bytes {
+                cap, seen, seed, ..
+            } => (
+                format!(
+                    "limit of {} reached at {}",
+                    ByteSize(*cap as usize),
+                    ByteSize(*seen as usize),
+                ),
+                *seed,
             ),
-            LimitKind::Packets { cap, .. } => {
+            LimitKind::Packets { cap, seed, .. } => {
                 let unit = if *cap == 1 { "packet" } else { "packets" };
 
-                format!("limit of {cap} {unit} reached")
+                (format!("limit of {cap} {unit} reached"), *seed)
             }
+        };
+
+        // A drawn cap says where it came from, so the run can be repeated.
+        let reason = match seed {
+            Some(seed) => format!("{reason} (seed={seed})"),
+            None => reason,
         };
 
         ctx.halt(&reason);
@@ -216,6 +384,7 @@ impl Plugin for Limit {
                 cap,
                 seen,
                 at_limit,
+                ..
             } => {
                 // Saturating because `overshoot` leaves `seen` past `cap`.
                 // Nothing can reach here in that state today (`stopped` is set
@@ -257,11 +426,25 @@ impl Plugin for Limit {
             // Nothing is ever copied or cut here: a packet is either inside the
             // count or after it, and the one that reaches the cap is passed on
             // whole before the stream ends.
-            LimitKind::Packets { cap, seen } => {
-                *seen += 1;
-                ctx.pass_through();
+            LimitKind::Packets { cap, seen, .. } => {
+                // A cap of none is decided before the count rather than after
+                // it, which is the only asymmetry between the two limits:
+                // everywhere else a packet limit passes the chunk that reaches
+                // the cap, and here there is no chunk it is allowed to pass.
+                //
+                // The byte limit expresses the same thing through `at-limit`,
+                // where truncating a chunk to nothing is what a cap of zero
+                // means. A packet cannot be truncated, so it is dropped.
+                if *cap == 0 {
+                    ctx.drop_chunk();
 
-                *seen >= *cap
+                    true
+                } else {
+                    *seen += 1;
+                    ctx.pass_through();
+
+                    *seen >= *cap
+                }
             }
         };
 
@@ -297,6 +480,19 @@ impl PluginFactory for LimitFactory {
     fn build(&self, ctx: &mut BuildCtx<'_>) -> Result<Stage> {
         let config: LimitConfig = ctx.config()?;
 
+        // A seed that changes nothing reads as a setting that does, so a fixed
+        // cap refuses one rather than ignoring it.
+        let drawn = matches!(config.bytes, Some(Cap::Between(_) | Cap::Rate(_)))
+            || matches!(config.packets, Some(Cap::Between(_) | Cap::Rate(_)));
+
+        if config.seed.is_some() && !drawn {
+            return Err(PluginError::config(
+                NAME,
+                "seed is for a drawn limit: give a range as bytes=1KiB..1MiB, or a rate as \
+                 bytes=25%",
+            ));
+        }
+
         let kind = match (config.bytes, config.packets) {
             (Some(_), Some(_)) => {
                 return Err(PluginError::config(
@@ -312,15 +508,20 @@ impl PluginFactory for LimitFactory {
                      chunks arriving",
                 ));
             }
-            (Some(bytes), None) => LimitKind::Bytes {
-                cap: bytes.bytes() as u64,
-                seen: 0,
-                at_limit: config.at_limit.unwrap_or_default(),
-            },
+            (Some(bytes), None) => {
+                let (cap, seed) = bytes.resolve(config.seed)?;
+
+                LimitKind::Bytes {
+                    cap,
+                    seen: 0,
+                    at_limit: config.at_limit.unwrap_or_default(),
+                    seed,
+                }
+            }
             (None, Some(packets)) => {
                 // `bytes()` is the accessor whatever the quantity is: the
                 // packet count borrows the size grammar and nothing else.
-                let cap = packets.bytes() as u64;
+                let (cap, seed) = packets.resolve(config.seed)?;
 
                 if config.at_limit.is_some() {
                     return Err(PluginError::config(
@@ -330,18 +531,7 @@ impl PluginFactory for LimitFactory {
                     ));
                 }
 
-                // The count is made when a chunk arrives, so a stage told to
-                // pass none of them has no moment at which to say so: the
-                // first chunk would have to pass before the halt.
-                if cap == 0 {
-                    return Err(PluginError::config(
-                        NAME,
-                        "packets must be at least 1: the count is made as a chunk passes, so a \
-                         limit of none can never be announced",
-                    ));
-                }
-
-                LimitKind::Packets { cap, seen: 0 }
+                LimitKind::Packets { cap, seen: 0, seed }
             }
         };
 
@@ -617,7 +807,7 @@ mod tests {
     fn a_packet_count_is_written_like_any_other_quantity() {
         assert_eq!(
             build_config(json!({"chunks": 4})).packets,
-            Some(ByteSize(4))
+            Some(Cap::Fixed(ByteSize(4)))
         );
 
         let mut plugin = build(json!({"packets": "1k"}));
