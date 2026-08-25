@@ -32,26 +32,20 @@
 use std::{
     fmt::Write as _,
     io::{IsTerminal, Write as _},
-    pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
-use tocat_api::Direction;
-use tokio::{
-    io::{AsyncRead, ReadBuf},
-    sync::oneshot,
-    task::JoinHandle,
-    time::MissedTickBehavior,
+use tocat_core::{
+    endpoint::{EndpointSpec, Transport},
+    progress::Meter,
 };
+use tokio::{sync::oneshot, task::JoinHandle, time::MissedTickBehavior};
 use tracing_subscriber::fmt::MakeWriter;
-
-use crate::endpoint::{EndpointSpec, ReadHalf, Transport};
 
 /// How often the line is redrawn.
 const REDRAW: Duration = Duration::from_millis(100);
@@ -79,6 +73,13 @@ const BYTE_UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 /// by whoever last touched the terminal.
 static ON_SCREEN: AtomicUsize = AtomicUsize::new(0);
 
+/// A running progress display.
+pub struct Progress {
+    meter: Arc<Meter>,
+    stop: oneshot::Sender<()>,
+    painter: JoinHandle<()>,
+}
+
 /// When to draw the progress line.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -89,140 +90,6 @@ pub enum ProgressMode {
     Auto,
     /// Draw regardless, as `pv --force` does.
     Always,
-}
-
-/// The shared byte count behind the display.
-pub struct Meter {
-    /// Indexed by [`slot`]: one counter per path.
-    counts: [AtomicU64; 2],
-    connections: AtomicUsize,
-    started: Instant,
-    /// Total bytes expected on the forward path, when that is knowable. Absent
-    /// means no bar, no percentage and no ETA: the `pv`-on-a-pipe display.
-    expected: Option<u64>,
-}
-
-fn slot(direction: Direction) -> usize {
-    match direction {
-        Direction::SourceToSink => 0,
-        Direction::SinkToSource => 1,
-    }
-}
-
-impl Meter {
-    /// A handle that adds to one path's count.
-    #[must_use]
-    pub fn counter(self: &Arc<Self>, direction: Direction) -> Counter {
-        Counter {
-            meter: Arc::clone(self),
-            slot: slot(direction),
-        }
-    }
-
-    /// Register a live connection, until the guard is dropped.
-    #[must_use]
-    pub fn connected(self: &Arc<Self>) -> ConnectionGuard {
-        self.connections.fetch_add(1, Ordering::Relaxed);
-        ConnectionGuard(Arc::clone(self))
-    }
-
-    /// `(source-to-sink, sink-to-source)`.
-    fn read(&self) -> (u64, u64) {
-        (
-            self.counts[0].load(Ordering::Relaxed),
-            self.counts[1].load(Ordering::Relaxed),
-        )
-    }
-}
-
-/// Adds to one path's byte count. Cheap to clone and to call.
-#[derive(Clone)]
-pub struct Counter {
-    meter: Arc<Meter>,
-    slot: usize,
-}
-
-impl Counter {
-    pub fn add(&self, bytes: u64) {
-        // Relaxed: a monotonic counter read for display orders nothing.
-        self.meter.counts[self.slot].fetch_add(bytes, Ordering::Relaxed);
-    }
-}
-
-pub struct ConnectionGuard(Arc<Meter>);
-
-impl Drop for ConnectionGuard {
-    fn drop(&mut self) {
-        self.0.connections.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-/// Counts the bytes read through it.
-pub struct Counted<R> {
-    inner: R,
-    counter: Counter,
-}
-
-impl<R: AsyncRead + Unpin> AsyncRead for Counted<R> {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        let before = buf.filled().len();
-        let this = self.get_mut();
-        let poll = Pin::new(&mut this.inner).poll_read(cx, buf);
-
-        // Counted on `Ready(Err(_))` too: a read can fill part of the buffer
-        // and then fail, and those bytes did arrive.
-        if poll.is_ready() {
-            let read = buf.filled().len().saturating_sub(before);
-
-            if read > 0 {
-                this.counter.add(read as u64);
-            }
-        }
-
-        poll
-    }
-}
-
-/// Attach counting to a read half.
-///
-/// A stream is wrapped, so the count happens inside `poll_read` wherever the
-/// bytes are eventually read. A datagram socket has nothing to wrap (`pump`
-/// calls `recv` on it directly, and the write half is a clone of the same
-/// socket) so the counter is handed back for the pump to use instead.
-/// Exactly one of the two happens, which is what stops the two paths from
-/// counting the same bytes twice.
-pub fn count(
-    meter: Option<&Arc<Meter>>,
-    half: ReadHalf,
-    direction: Direction,
-) -> (ReadHalf, Option<Counter>) {
-    let Some(meter) = meter else {
-        return (half, None);
-    };
-
-    let counter = meter.counter(direction);
-
-    match half {
-        ReadHalf::Stream(reader) => (
-            ReadHalf::Stream(Box::new(Counted {
-                inner: reader,
-                counter,
-            })),
-            None,
-        ),
-        ReadHalf::Datagram(socket) => (ReadHalf::Datagram(socket), Some(counter)),
-    }
-}
-
-/// A running progress display.
-pub struct Progress {
-    meter: Arc<Meter>,
-    stop: oneshot::Sender<()>,
-    painter: JoinHandle<()>,
 }
 
 impl Progress {
@@ -247,7 +114,7 @@ impl Progress {
         // Nothing moved: the relay failed to start, or had nothing to do.
         // Either way a line of zeroes is not worth the row.
         if moved > 0 {
-            let elapsed = self.meter.started.elapsed();
+            let elapsed = self.meter.started().elapsed();
             let seconds = elapsed.as_secs_f64();
             let average = if seconds > 0.0 {
                 moved as f64 / seconds
@@ -281,12 +148,7 @@ pub fn start(mode: ProgressMode, source: &EndpointSpec, sink: &EndpointSpec) -> 
         return None;
     }
 
-    let meter = Arc::new(Meter {
-        counts: [AtomicU64::new(0), AtomicU64::new(0)],
-        connections: AtomicUsize::new(0),
-        started: Instant::now(),
-        expected: expected_size(source, sink),
-    });
+    let meter = Arc::new(Meter::new(expected_size(source, sink)));
 
     let (stop, halt) = oneshot::channel();
     let painter = tokio::spawn(paint(Arc::clone(&meter), halt));
@@ -348,7 +210,7 @@ struct Painter {
 
 impl Painter {
     fn new(meter: Arc<Meter>) -> Self {
-        let started = meter.started;
+        let started = meter.started();
 
         Self {
             meter,
@@ -396,7 +258,7 @@ impl Painter {
     }
 
     fn compose(&mut self, forward: u64, reverse: u64, now: Instant, width: usize) {
-        let elapsed = now.duration_since(self.meter.started);
+        let elapsed = now.duration_since(self.meter.started());
 
         self.line.clear();
         let _ = write!(
@@ -407,13 +269,13 @@ impl Painter {
             bytes(self.rate),
         );
 
-        let connections = self.meter.connections.load(Ordering::Relaxed);
+        let connections = self.meter.connections();
         if connections > 1 {
             let _ = write!(self.line, " {connections} conns");
         }
 
         // A bar needs somewhere to be going.
-        let Some(expected) = self.meter.expected.filter(|expected| *expected > 0) else {
+        let Some(expected) = self.meter.expected().filter(|expected| *expected > 0) else {
             return;
         };
 
@@ -576,23 +438,20 @@ fn terminal_width() -> usize {
 
 #[cfg(test)]
 mod tests {
+    use tocat_api::Direction;
+
     use super::*;
 
     fn meter(expected: Option<u64>) -> Arc<Meter> {
-        Arc::new(Meter {
-            counts: [AtomicU64::new(0), AtomicU64::new(0)],
-            connections: AtomicUsize::new(0),
-            started: Instant::now(),
-            expected,
-        })
+        Arc::new(Meter::new(expected))
     }
 
     fn line(meter: &Arc<Meter>, rate: f64, width: usize) -> String {
         let mut painter = Painter::new(Arc::clone(meter));
         painter.rate = rate;
         painter.compose(
-            meter.counts[0].load(Ordering::Relaxed),
-            meter.counts[1].load(Ordering::Relaxed),
+            meter.load_forward_count(),
+            meter.load_reverse_count(),
             Instant::now(),
             width,
         );
@@ -612,7 +471,7 @@ mod tests {
     #[test]
     fn one_direction_shows_one_figure() {
         let meter = meter(None);
-        meter.counts[0].store(2048, Ordering::Relaxed);
+        meter.counter(Direction::SourceToSink).add(2048);
 
         let line = line(&meter, 1024.0, 80);
         assert!(line.contains("2.00KiB"), "{line}");
@@ -622,8 +481,8 @@ mod tests {
     #[test]
     fn both_directions_are_labelled() {
         let meter = meter(None);
-        meter.counts[0].store(2048, Ordering::Relaxed);
-        meter.counts[1].store(1024, Ordering::Relaxed);
+        meter.counter(Direction::SourceToSink).add(2048);
+        meter.counter(Direction::SinkToSource).add(1024);
 
         let line = line(&meter, 1024.0, 80);
         assert!(line.contains("2.00KiB out"), "{line}");
@@ -633,7 +492,7 @@ mod tests {
     #[test]
     fn a_known_total_adds_a_bar_and_an_eta() {
         let meter = meter(Some(1000));
-        meter.counts[0].store(500, Ordering::Relaxed);
+        meter.counter(Direction::SourceToSink).add(500);
 
         let line = line(&meter, 100.0, 100);
         assert!(line.contains(" 50%"), "{line}");
@@ -646,7 +505,7 @@ mod tests {
     #[test]
     fn a_narrow_terminal_drops_the_bar_not_the_numbers() {
         let meter = meter(Some(1000));
-        meter.counts[0].store(500, Ordering::Relaxed);
+        meter.counter(Direction::SourceToSink).add(500);
 
         let line = line(&meter, 100.0, 44);
         assert!(!line.contains('='), "no room for a bar: {line}");
@@ -657,7 +516,7 @@ mod tests {
     #[test]
     fn an_unknown_total_has_no_bar() {
         let meter = meter(None);
-        meter.counts[0].store(500, Ordering::Relaxed);
+        meter.counter(Direction::SourceToSink).add(500);
 
         let line = line(&meter, 100.0, 100);
         assert!(!line.contains('%'), "{line}");
@@ -691,8 +550,8 @@ mod tests {
     #[test]
     fn frames_are_ascii() {
         let meter = meter(Some(4096));
-        meter.counts[0].store(2048, Ordering::Relaxed);
-        meter.counts[1].store(64, Ordering::Relaxed);
+        meter.counter(Direction::SourceToSink).add(2048);
+        meter.counter(Direction::SinkToSource).add(500);
 
         let line = line(&meter, 1024.0, 100);
         assert!(line.is_ascii(), "{line}");

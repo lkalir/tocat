@@ -848,10 +848,11 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_of_no_packets_is_refused() {
-        assert!(
-            try_build(json!({"packets": 0})).is_err(),
-            "the first chunk would have to pass before the halt",
-        );
+    fn a_limit_of_no_packets_passes_nothing() {
+        let mut plugin = build(json!({ "packets": 0}));
+        let mut sink = Recorder::default();
+
+        assert_eq!(feed(&mut *plugin, &mut sink, b"nothing").len(), 0);
+        assert!(sink.halt.is_some(), "the limit must stop the read");
     }
 }

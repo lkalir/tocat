@@ -14,28 +14,25 @@
 
 use std::num::NonZeroUsize;
 
-use tocat_api::normalize;
+use tocat_api::{ByteSize, normalize};
 
-use crate::{
-    config::ByteSize,
-    endpoint::{
-        EndpointSpec, LayerSpec, Proxy, Socks, Tls, Transport, Ws,
-        chan::Chan,
-        exec::{Exec, System},
-        file::File,
-        layer::{proxy::split_target, ws::split_path},
-        pipe::Pipe,
-        pty::{Pty, PtyExec},
-        stdio::Stdio,
-        sys::Mode,
-        tcp::{Tcp, TcpListen},
-        tty::Tty,
-        udp::{Udp, UdpListen},
-        unix::{
-            Unix, UnixListen,
-            dgram::{UnixDgram, UnixDgramListen},
-            seqpacket::{UnixSeqpacket, UnixSeqpacketListen},
-        },
+use crate::endpoint::{
+    EndpointSpec, LayerSpec, Proxy, Socks, Tls, Transport, Ws,
+    chan::Chan,
+    exec::{Exec, System},
+    file::File,
+    layer::{proxy::split_target, ws::split_path},
+    pipe::Pipe,
+    pty::{Pty, PtyExec},
+    stdio::Stdio,
+    sys::Mode,
+    tcp::{Tcp, TcpListen},
+    tty::Tty,
+    udp::{Udp, UdpListen},
+    unix::{
+        Unix, UnixListen,
+        dgram::{UnixDgram, UnixDgramListen},
+        seqpacket::{UnixSeqpacket, UnixSeqpacketListen},
     },
 };
 

@@ -8,11 +8,11 @@
 
 use std::{future::Future, path::Path, time::Duration};
 
-use tocat::{
-    config::parse_plugin_spec,
+use tocat_core::{
     endpoint::EndpointSpec,
     relay::Relay,
     shutdown::{self, Trigger},
+    spec::parse_plugin_spec,
 };
 #[cfg(feature = "block")]
 use tokio::sync::mpsc;

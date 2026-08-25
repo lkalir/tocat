@@ -20,27 +20,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-base64 = { workspace = true }
 clap = { workspace = true }
 console-subscriber = { version = "0.5.0", optional = true }
-futures = "0.3.33"
-futures-util = "0.3.33"
-pty-process = { version = "0.5.3", features = ["async"] }
-rustix = {
-  version = "1.1.4",
-  features = ["fs", "net", "pipe", "pty", "termios"]
-}
-rustls = {
-  version = "0.23.43",
-  default-features = false,
-  features = ["aws-lc-rs", "logging", "std", "tls12"]
-}
-rustls-native-certs = "0.8.4"
-rustls-pemfile = "2.2.0"
+rustix = { workspace = true, features = ["termios"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10.9"
 tocat-api = { workspace = true }
+tocat-core = { workspace = true }
 tocat-plugins = { workspace = true }
 tokio = {
   version = "1.53.1",
@@ -58,19 +44,7 @@ tokio = {
     "time"
   ]
 }
-tokio-rustls = {
-  version = "0.26.4",
-  default-features = false,
-  features = ["aws-lc-rs", "logging", "tls12"],
-}
-tokio-seqpacket = "0.9.1"
-tokio-tungstenite = {
-  version = "0.30.0",
-  default-features = false,
-  features = ["handshake"]
-}
-tokio-util = { version = "0.7.19", features = ["rt"] }
-toml = "1.1.4"
+toml = { workspace = true }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }

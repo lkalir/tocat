@@ -12,11 +12,11 @@
 use std::{future::Future, path::Path, sync::Arc, time::Duration};
 
 use sha2::{Digest as _, Sha256};
-use tocat::{
-    config::parse_plugin_spec,
+use tocat_core::{
     endpoint::EndpointSpec,
     relay::Relay,
     shutdown::{self, Trigger},
+    spec::parse_plugin_spec,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},

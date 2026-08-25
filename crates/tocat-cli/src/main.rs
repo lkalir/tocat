@@ -22,10 +22,9 @@ use tocat::{
     config::{dump, load_config, resolve},
     logging::{bootstrap_logging, init_logging},
     progress::{self, Progress},
-    relay::Relay,
-    shutdown,
 };
 use tocat_api::Registry;
+use tocat_core::{relay::Relay, shutdown};
 use tracing::{debug, error};
 
 /// How long teardown waits on blocking tasks before leaving them behind.

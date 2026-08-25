@@ -21,16 +21,13 @@ use std::os::unix::fs::FileTypeExt;
 use anyhow::Context;
 use rustix::fs::Mode as FileMode;
 use serde::{Deserialize, Serialize};
-use tocat_api::normalize;
+use tocat_api::{ByteSize, normalize};
 use tracing::warn;
 
-use crate::{
-    config::ByteSize,
-    endpoint::{
-        Connection, Direction, EndpointStream, SyncHalves,
-        parse::{Opt, ParseEndpointError},
-        sys::{Mode, PathGuard, default_true, size_if_pipe},
-    },
+use crate::endpoint::{
+    Connection, Direction, EndpointStream, SyncHalves,
+    parse::{Opt, ParseEndpointError},
+    sys::{Mode, PathGuard, default_true, size_if_pipe},
 };
 
 #[derive(Debug, Deserialize, Serialize)]

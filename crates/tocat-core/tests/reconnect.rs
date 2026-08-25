@@ -16,7 +16,7 @@
 
 use std::{future::Future, path::Path, time::Duration};
 
-use tocat::{
+use tocat_core::{
     endpoint::EndpointSpec,
     relay::Relay,
     shutdown::{self, Trigger},

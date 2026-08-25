@@ -12,7 +12,7 @@
 use std::{future::Future, path::Path, time::Duration};
 
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
-use tocat::{endpoint::EndpointSpec, relay::Relay, shutdown};
+use tocat_core::{endpoint::EndpointSpec, relay::Relay, shutdown};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},

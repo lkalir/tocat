@@ -18,11 +18,11 @@
 
 use std::{future::Future, time::Duration};
 
-use tocat::{
-    config::parse_plugin_spec,
+use tocat_core::{
     endpoint::EndpointSpec,
     relay::Relay,
     shutdown::{self, Trigger},
+    spec::parse_plugin_spec,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
