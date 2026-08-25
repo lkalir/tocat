@@ -5,6 +5,7 @@ members = [
   "crates/tocat-cli",
   "crates/tocat-core",
   "crates/tocat-plugins",
+  "crates/tocat-tui",
   "crates/tocat-wasm-abi",
   "crates/tocat-wasm-sdk",
   "crates/tocat-wasm-shell"
@@ -27,8 +28,9 @@ rustix = "1.1.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tocat-api = { path = "crates/tocat-api", version = "0.2.1" }
-tocat-core = { path = "crates/tocat-core" }
+tocat-core = { path = "crates/tocat-core", version = "0.2.1" }
 tocat-wasm-abi = { path = "crates/tocat-wasm-abi", version = "0.2.1" }
+tokio = "1.53.1"
 toml = "1.1.4"
 wasmtime = "47.0.3"
 

@@ -1,0 +1,22 @@
+[package]
+name = "tocat-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "A terminal frontend for tocat: build a relay interactively and watch it run"
+repository.workspace = true
+license.workspace = true
+keywords = ["proxy", "ratatui", "relay", "socat", "tui"]
+categories = ["command-line-utilities", "network-programming"]
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+futures = "0.3.34"
+ratatui = "0.30.2"
+tocat-core = { workspace = true }
+tocat-plugins = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }

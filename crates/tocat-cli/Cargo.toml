@@ -29,7 +29,7 @@ tocat-api = { workspace = true }
 tocat-core = { workspace = true }
 tocat-plugins = { workspace = true }
 tokio = {
-  version = "1.53.1",
+  workspace = true,
   features = [
     "fs",
     "io-std",
