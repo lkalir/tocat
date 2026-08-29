@@ -1,0 +1,45 @@
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+version = 2
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[[licenses.clarify]]
+name = "aws-lc-sys"
+expression = "Apache-2.0 AND ISC AND OpenSSL"
+license-files = []
+
+[[licenses.exceptions]]
+name = "aws-lc-sys"
+allow = ["OpenSSL"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+deny = [
+  { name = "rustls-pemfile", reason = "unmaintained; use rustls-pki-types::PemObject" },
+  { name = "openssl-sys", reason = "tls is rustls here" },
+  { name = "native-tls", reason = "tls is rustls here" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

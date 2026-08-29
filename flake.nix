@@ -138,6 +138,7 @@
 
         checkTools = with pkgs; [
           cargo-nextest
+          cargo-deny
           mdbook
           commitlint
           dprint
@@ -148,7 +149,6 @@
           cargo-watch
           cargo-edit
           cargo-audit
-          cargo-deny
           bacon
           release-plz
           cargo-semver-checks
