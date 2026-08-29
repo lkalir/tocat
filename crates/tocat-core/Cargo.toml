@@ -26,7 +26,7 @@ rustls = {
   features = ["aws-lc-rs", "logging", "std", "tls12"]
 }
 rustls-native-certs = "0.8.4"
-rustls-pemfile = "2.2.0"
+rustls-pki-types = "1.15.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.11.0"

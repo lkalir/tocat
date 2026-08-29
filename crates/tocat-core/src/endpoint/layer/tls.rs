@@ -28,8 +28,6 @@
 //! check rather than the absence of one.
 
 use std::{
-    fs::File,
-    io::BufReader,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -316,10 +314,9 @@ impl Tls {
             return Ok(roots);
         };
 
-        let mut reader =
-            BufReader::new(File::open(path).with_context(|| format!("opening {path}"))?);
-
-        for cert in rustls_pemfile::certs(&mut reader) {
+        for cert in rustls_pki_types::CertificateDer::pem_file_iter(path)
+            .with_context(|| format!("opening {path}"))?
+        {
             roots.add(cert.with_context(|| format!("reading {path}"))?)?;
         }
 
@@ -372,9 +369,8 @@ impl Tls {
 
 /// A PEM certificate chain from a file.
 fn chain(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
-    let mut reader = BufReader::new(File::open(path).with_context(|| format!("opening {path}"))?);
-
-    rustls_pemfile::certs(&mut reader)
+    rustls_pki_types::CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("opening {path}"))?
         .collect::<Result<Vec<_>, _>>()
         .with_context(|| format!("reading {path}"))
 }
