@@ -23,7 +23,7 @@ keywords = ["netcat", "proxy", "relay", "socat", "tcp"]
 [workspace.dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
-clap = { version = "4.6.4", features = ["derive"] }
+clap = { version = "4.6.6", features = ["derive"] }
 rustix = "1.1.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -41,7 +41,7 @@ tocat-plugins = {
 tocat-wasm-abi = { path = "crates/tocat-wasm-abi", version = "0.2.1" }
 tokio = "1.53.1"
 toml = "1.1.4"
-wasmtime = "47.0.3"
+wasmtime = "47.0.4"
 
 [profile.ci]
 inherits = "dev"
