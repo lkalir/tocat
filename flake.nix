@@ -33,6 +33,7 @@
             "rust-analyzer"
             "clippy"
             "rustfmt"
+            "llvm-tools"
           ];
           targets = [
             "x86_64-unknown-linux-musl"
@@ -149,6 +150,7 @@
           cargo-watch
           cargo-edit
           cargo-audit
+          cargo-llvm-cov
           bacon
           release-plz
           cargo-semver-checks

@@ -1,5 +1,9 @@
 # tocat
 
+[![CI](https://github.com/lkalir/tocat/actions/workflows/ci.yml/badge.svg)](https://img.shields.io/github/actions/workflow/status/lkalir/tocat/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/tocat.svg?label=tocat)](https://crates.io/crates/tocat)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 A socat-inspired relay built on tokio. tocat connects two endpoints (sockets,
 files, subprocesses, stdio, etc.) and copies bytes between them in both
 directions. Unlike socat, connections can be described in a TOML config file
