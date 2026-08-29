@@ -10,14 +10,6 @@ license.workspace = true
 keywords.workspace = true
 categories = ["command-line-utilities", "network-programming"]
 
-[lib]
-name = "tocat"
-path = "src/lib.rs"
-
-[[bin]]
-name = "tocat"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -27,7 +19,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tocat-api = { workspace = true }
 tocat-core = { workspace = true }
-tocat-plugins = { workspace = true }
 tokio = {
   workspace = true,
   features = [
@@ -57,22 +48,7 @@ tempfile = "3.27.0"
 
 [features]
 default = ["all-plugins", "schema"]
-all-plugins = [
-  "base64",
-  "block",
-  "compress",
-  "encrypt",
-  "frame",
-  "hash",
-  "hexify",
-  "limit",
-  "process",
-  "rate",
-  "tee",
-  "throttle",
-  "timeout",
-  "wasm"
-]
+all-plugins = ["all-plugins-no-wasm", "wasm"]
 all-plugins-no-wasm = [
   "base64",
   "block",
@@ -88,22 +64,22 @@ all-plugins-no-wasm = [
   "throttle",
   "timeout",
 ]
-base64 = ["tocat-plugins/base64"]
-block = ["tocat-plugins/block"]
-compress = ["tocat-plugins/compress"]
-encrypt = ["tocat-plugins/encrypt"]
-frame = ["tocat-plugins/frame"]
-hash = ["tocat-plugins/hash"]
-hexify = ["tocat-plugins/hexify"]
-limit = ["tocat-plugins/limit"]
-process = ["tocat-plugins/process"]
-rate = ["tocat-plugins/rate"]
+base64 = ["tocat-core/base64"]
+block = ["tocat-core/block"]
+compress = ["tocat-core/compress"]
+encrypt = ["tocat-core/encrypt"]
+frame = ["tocat-core/frame"]
+hash = ["tocat-core/hash"]
+hexify = ["tocat-core/hexify"]
+limit = ["tocat-core/limit"]
+process = ["tocat-core/process"]
+rate = ["tocat-core/rate"]
 schema = []
-tee = ["tocat-plugins/tee"]
-throttle = ["tocat-plugins/throttle"]
-timeout = ["tocat-plugins/timeout"]
+tee = ["tocat-core/tee"]
+throttle = ["tocat-core/throttle"]
+timeout = ["tocat-core/timeout"]
 tokio-console = ["dep:console-subscriber"]
-wasm = ["tocat-plugins/wasm"]
+wasm = ["tocat-core/wasm"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }

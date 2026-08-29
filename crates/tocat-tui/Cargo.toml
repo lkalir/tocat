@@ -15,8 +15,41 @@ anyhow = { workspace = true }
 futures = "0.3.34"
 ratatui = "0.30.2"
 tocat-core = { workspace = true }
-tocat-plugins = { workspace = true }
+tocat-plugins = { workspace = true, default-features = false }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
+
+[features]
+default = ["all-plugins"]
+all-plugins = ["all-plugins-no-wasm", "wasm"]
+all-plugins-no-wasm = [
+  "base64",
+  "block",
+  "compress",
+  "encrypt",
+  "frame",
+  "hash",
+  "hexify",
+  "limit",
+  "process",
+  "rate",
+  "tee",
+  "throttle",
+  "timeout"
+]
+base64 = ["tocat-core/base64"]
+block = ["tocat-core/block"]
+compress = ["tocat-core/compress"]
+encrypt = ["tocat-core/encrypt"]
+frame = ["tocat-core/frame"]
+hash = ["tocat-core/hash"]
+hexify = ["tocat-core/hexify"]
+limit = ["tocat-core/limit"]
+process = ["tocat-core/process"]
+rate = ["tocat-core/rate"]
+tee = ["tocat-core/tee"]
+throttle = ["tocat-core/throttle"]
+timeout = ["tocat-core/timeout"]
+wasm = ["tocat-core/wasm"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }

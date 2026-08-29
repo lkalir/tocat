@@ -67,5 +67,38 @@ rcgen = "0.14.9"
 tempfile = "3.27.0"
 toml = { workspace = true }
 
+[features]
+default = ["all-plugins"]
+all-plugins = ["all-plugins-no-wasm", "wasm"]
+all-plugins-no-wasm = [
+  "base64",
+  "block",
+  "compress",
+  "encrypt",
+  "frame",
+  "hash",
+  "hexify",
+  "limit",
+  "process",
+  "rate",
+  "tee",
+  "throttle",
+  "timeout"
+]
+base64 = ["tocat-plugins/base64"]
+block = ["tocat-plugins/block"]
+compress = ["tocat-plugins/compress"]
+encrypt = ["tocat-plugins/encrypt"]
+frame = ["tocat-plugins/frame"]
+hash = ["tocat-plugins/hash"]
+hexify = ["tocat-plugins/hexify"]
+limit = ["tocat-plugins/limit"]
+process = ["tocat-plugins/process"]
+rate = ["tocat-plugins/rate"]
+tee = ["tocat-plugins/tee"]
+throttle = ["tocat-plugins/throttle"]
+timeout = ["tocat-plugins/timeout"]
+wasm = ["tocat-plugins/wasm"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }

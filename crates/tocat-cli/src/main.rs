@@ -13,19 +13,24 @@
 //! plugin registry, then `Relay::new`, which constructs every declared plugin
 //! and opens its side channels, so a bad declaration fails here rather than on
 //! the first byte of the first connection.
+mod cli;
+mod config;
+mod logging;
+mod progress;
 
 use std::{process::ExitCode, time::Duration};
 
 use clap::Parser;
-use tocat::{
+use tocat_api::Registry;
+use tocat_core::{plugins::native_registry, relay::Relay, shutdown};
+use tracing::{debug, error};
+
+use crate::{
     cli::Cli,
     config::{dump, load_config, resolve},
     logging::{bootstrap_logging, init_logging},
-    progress::{self, Progress},
+    progress::Progress,
 };
-use tocat_api::Registry;
-use tocat_core::{relay::Relay, shutdown};
-use tracing::{debug, error};
 
 /// How long teardown waits on blocking tasks before leaving them behind.
 ///
@@ -54,7 +59,7 @@ async fn start() -> anyhow::Result<ExitCode> {
 
     // Everything compiled into this binary. A WASM loader would add its
     // discovered modules to the same registry.
-    let registry: Registry = tocat_plugins::native_registry();
+    let registry: Registry = native_registry();
 
     if cli.list_plugins {
         for factory in registry.iter() {

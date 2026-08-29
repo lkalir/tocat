@@ -190,7 +190,7 @@ impl App {
                 source,
                 sink,
                 plugins,
-                tocat_plugins::native_registry(),
+                tocat_core::plugins::native_registry(),
                 BUFFER,
                 Some(meter.clone()),
             ))?;

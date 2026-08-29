@@ -3639,7 +3639,6 @@ dependencies = [
  "tempfile",
  "tocat-api",
  "tocat-core",
- "tocat-plugins",
  "tokio",
  "toml 1.1.4+spec-1.1.0",
  "tracing",

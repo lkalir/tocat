@@ -19,3 +19,7 @@ pub mod pump;
 pub mod relay;
 pub mod shutdown;
 pub mod spec;
+
+pub mod plugins {
+    pub use tocat_plugins::{native_registry, register_native};
+}
