@@ -40,6 +40,9 @@ mod limit;
 #[cfg(feature = "process")]
 mod process;
 
+#[cfg(feature = "limit")]
+mod random;
+
 #[cfg(feature = "rate")]
 mod rate;
 

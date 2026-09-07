@@ -84,10 +84,14 @@
 //! `drop` and `overshoot` are both safe and `exact` is not: half a datagram is
 //! a corrupt message rather than a short read. A packet limit never splits.
 
+use rand::{Rng, RngExt, SeedableRng};
+use rand_distr::{Distribution, Geometric};
 use serde::{Deserialize, Serialize};
 use tocat_api::{
     Boundaries, BuildCtx, ByteSize, Ctx, Plugin, PluginError, PluginFactory, Ratio, Result, Stage,
 };
+
+use crate::random::Prng;
 
 pub const NAME: &str = "limit";
 
@@ -167,20 +171,6 @@ impl<'de> Deserialize<'de> for Between {
     }
 }
 
-/// SplitMix64: eight lines, and reproducible across releases of anything.
-///
-/// A general purpose generator would be a dependency and, more to the point,
-/// gives no promise that a seed produces the same sequence next year. A test
-/// tool whose seeds stop replaying is worse than one with no seeds, so the
-/// generator is written down here where it cannot drift.
-fn draw(seed: u64) -> u64 {
-    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-
-    z ^ (z >> 31)
-}
-
 /// The offset a per byte rate stops at.
 ///
 /// Rolling once per byte and drawing the offset once are the same
@@ -191,22 +181,21 @@ fn draw(seed: u64) -> u64 {
 ///
 /// `p` at or above one stops before anything passes, which is the reading that
 /// matches the formula: the probability is of stopping *at* a byte, so
-/// certainty stops at the first. A `p` small enough to overflow saturates,
-/// which is "effectively never" and is the honest answer for it.
-fn geometric(p: f64, seed: u64) -> u64 {
+/// certainty stops at the first. `Geometric` counts failures before the first
+/// success, which is the same offset, and it saturates at `u64::MAX` for a `p`
+/// too small to ever stop, which is "effectively never".
+fn geometric<R: Rng>(p: f64, rng: &mut R) -> u64 {
     if p >= 1.0 {
         return 0;
     }
 
-    // Uniform in (0, 1]: the shift takes the top 53 bits, and the offset keeps
-    // it off zero so the logarithm stays finite.
-    let uniform = ((draw(seed) >> 11) as f64 + 1.0) / (1u64 << 53) as f64;
-    let n = uniform.ln() / (1.0 - p).ln();
-
-    if n.is_finite() && n < u64::MAX as f64 {
-        n as u64
-    } else {
-        u64::MAX
+    match Geometric::new(p) {
+        Ok(dist) => dist.sample(rng),
+        // `p` arrives as an already validated ratio, so the constructor
+        // cannot reject it. Saturating rather than panicking keeps a bad
+        // configuration from tearing down a live pipeline: it reads as a
+        // limit that never fires.
+        Err(_) => u64::MAX,
     }
 }
 
@@ -231,6 +220,10 @@ impl Cap {
                 .map_or(0, |since| since.as_nanos() as u64)
         });
 
+        // The generator is local: the cap is drawn once here and the seed is
+        // what the halt message needs, so nothing downstream holds a `Prng`.
+        let mut prng = Prng::seed_from_u64(seed);
+
         let Some(range) = range else {
             let Cap::Rate(rate) = self else {
                 unreachable!()
@@ -244,7 +237,7 @@ impl Cap {
                 ));
             }
 
-            return Ok((geometric(p, seed), Some(seed)));
+            return Ok((geometric(p, &mut prng), Some(seed)));
         };
 
         let min = range.min.bytes() as u64;
@@ -257,9 +250,7 @@ impl Cap {
             ));
         }
 
-        let span = max - min + 1;
-
-        Ok((min + draw(seed) % span, Some(seed)))
+        Ok((prng.random_range(min..=max), Some(seed)))
     }
 }
 
@@ -854,5 +845,90 @@ mod tests {
 
         assert_eq!(feed(&mut *plugin, &mut sink, b"nothing").len(), 0);
         assert!(sink.halt.is_some(), "the limit must stop the read");
+    }
+
+    /// A drawn cap has to land inside the window at both ends. The draw is the
+    /// only place a limit can quietly exceed what was configured.
+    #[test]
+    fn a_range_cap_stays_inside_the_range() {
+        let cap = Cap::Between(Between {
+            min: ByteSize(1024),
+            max: ByteSize(2048),
+        });
+
+        for seed in 0..512 {
+            let (drawn, reported) = cap.resolve(Some(seed)).expect("resolve");
+
+            assert!((1024..=2048).contains(&drawn), "seed {seed} drew {drawn}");
+            assert_eq!(reported, Some(seed));
+        }
+    }
+
+    /// A window one wide has one answer, so an off by one shows as the wrong
+    /// number rather than as a rare failure.
+    #[test]
+    fn a_range_of_one_draws_that_one() {
+        let cap = Cap::Between(Between {
+            min: ByteSize(4096),
+            max: ByteSize(4096),
+        });
+
+        assert_eq!(cap.resolve(Some(1)).expect("resolve").0, 4096);
+    }
+
+    /// The number in the halt message is what `seed` takes back, for every
+    /// drawn form. Without this the seed is decoration.
+    #[test]
+    fn a_reported_seed_reproduces_the_cap() {
+        let caps = [
+            Cap::Between(Between {
+                min: ByteSize(1),
+                max: ByteSize(1 << 20),
+            }),
+            Cap::Rate(Ratio(0.001)),
+        ];
+
+        for cap in caps {
+            let (drawn, reported) = cap.resolve(None).expect("resolve");
+            let seed = reported.expect("a drawn cap reports its seed");
+
+            assert_eq!(
+                cap.resolve(Some(seed)).expect("resolve"),
+                (drawn, Some(seed))
+            );
+        }
+    }
+
+    /// Nothing was drawn, so there is no seed to report and none to refuse.
+    #[test]
+    fn a_fixed_cap_reports_no_seed() {
+        assert_eq!(
+            Cap::Fixed(ByteSize(10)).resolve(None).expect("resolve"),
+            (10, None)
+        );
+    }
+
+    /// The two ends of the rate: certainty stops before the first byte, and a
+    /// rate of zero never stops.
+    #[test]
+    fn the_ends_of_the_rate_are_the_readings_that_match_the_formula() {
+        let mut prng = Prng::seed_from_u64(1);
+
+        assert_eq!(geometric(1.0, &mut prng), 0);
+        assert_eq!(geometric(0.0, &mut prng), u64::MAX);
+    }
+
+    /// A halt names the seed so the run can be repeated.
+    #[test]
+    fn the_halt_message_carries_the_seed() {
+        let mut plugin = build(json!({"bytes": "8..8", "seed": 99}));
+        let mut sink = Recorder::default();
+
+        feed(&mut *plugin, &mut sink, &[0u8; 16]);
+
+        assert_eq!(
+            sink.halt.as_deref(),
+            Some("limit of 8 reached at 8 (seed=99)")
+        );
     }
 }

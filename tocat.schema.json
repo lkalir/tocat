@@ -2891,7 +2891,7 @@
           "description": "Override the plugin's default placement. True runs this stage on its own task behind a bounded channel: one copy and one wakeup per chunk, worth it only for stages that are expensive per byte."
         },
         "bytes": {
-          "description": "How many bytes to let past before ending the stream. A plain byte count or a binary suffix ('64k', '1MiB'). Counted at this stage's own position, and per direction: with direction 'both' each path gets its own budget.",
+          "description": "How many bytes to let past before ending the stream. A plain byte count or a binary suffix ('64k', '1MiB'), a range as '1KiB..1MiB' for a count drawn uniformly inside it, or a rate as '25%', '1/4' or '0.25' for the chance of stopping at each byte. A drawn count reports the seed it came from and `seed` takes that number back. Counted at this stage's own position, and per direction: with direction 'both' each path gets its own budget.",
           "oneOf": [
             {
               "type": "integer",
@@ -2900,11 +2900,19 @@
             {
               "type": "string",
               "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *\\.\\. *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            },
+            {
+              "type": "string",
+              "pattern": "^ *([0-9]+(\\.[0-9]+)? *(%|/ *[0-9]+(\\.[0-9]+)?)|[0-9]*\\.[0-9]+) *$"
             }
           ]
         },
         "packets": {
-          "description": "How many chunks to let past before ending the stream. Written the way sizes are, with the same binary suffixes, so '1k' is 1024 chunks; it is logged back as a plain count. One chunk is one delivery from whatever sits above the stage, which on a datagram path is exactly one message and on a byte stream is one read, sized by `buffer-size` and by when the peer's bytes arrived. Counted at this stage's own position, and per direction. The chunk that reaches the count is passed on whole, so `at-limit` decides nothing here and is refused.",
+          "description": "How many chunks to let past before ending the stream. Written the way sizes are, with the same binary suffixes, so '1k' is 1024 chunks; it is logged back as a plain count. It takes the drawn forms too: a range as '100..1000', or a rate as '1%' for the chance of stopping at each chunk. One chunk is one delivery from whatever sits above the stage, which on a datagram path is exactly one message and on a byte stream is one read, sized by `buffer-size` and by when the peer's bytes arrived. Counted at this stage's own position, and per direction. The chunk that reaches the count is passed on whole, so `at-limit` decides nothing here and is refused.",
           "oneOf": [
             {
               "type": "integer",
@@ -2913,6 +2921,14 @@
             {
               "type": "string",
               "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            },
+            {
+              "type": "string",
+              "pattern": "^ *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *\\.\\. *[0-9]+ *([KkMmGg][Ii]?[Bb]?|[Bb])? *$"
+            },
+            {
+              "type": "string",
+              "pattern": "^ *([0-9]+(\\.[0-9]+)? *(%|/ *[0-9]+(\\.[0-9]+)?)|[0-9]*\\.[0-9]+) *$"
             }
           ]
         },
@@ -2925,6 +2941,11 @@
             "exact",
             "overshoot"
           ]
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reproduce a drawn limit. Give back the number the halt line reported and the same count is drawn again, on any machine running the same tocat release. Only for a drawn `bytes` or `packets`; alongside a fixed count it would decide nothing and is refused."
         }
       }
     },

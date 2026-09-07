@@ -9,11 +9,12 @@ $ tocat udp-listen:9000 limit,packets=100 file:capture.bin
 $ tocat -f tcp-listen:9000,fork -t tcp:backend:8080 -p 'limit,bytes=1M,direction=source'
 ```
 
-| Option          | Description                                                                                                            |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `bytes=SIZE`    | How many bytes to let past. Takes the usual size suffixes, so `1M` is 1 MiB. Aliases: `max`, `size`                    |
-| `packets=N`     | How many chunks to let past. Takes the same suffixes as `bytes`, so `1k` is 1024 chunks. Aliases: `chunks`, `messages` |
-| `at-limit=MODE` | What to do with the chunk that crosses a `bytes` limit: `drop`, `exact` (the default) or `overshoot`                   |
+| Option          | Description                                                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bytes=SIZE`    | How many bytes to let past. Takes the usual size suffixes, so `1M` is 1 MiB. Also takes a range or a rate, see [drawing the limit](#drawing-the-limit). Aliases: `max`, `size` |
+| `packets=N`     | How many chunks to let past. Takes the same suffixes as `bytes`, so `1k` is 1024 chunks. Aliases: `chunks`, `messages`                                                         |
+| `at-limit=MODE` | What to do with the chunk that crosses a `bytes` limit: `drop`, `exact` (the default) or `overshoot`                                                                           |
+| `seed=N`        | Reproduce a drawn limit. Refused with a fixed `bytes` or `packets`, where it would decide nothing                                                                              |
 
 Give one of `bytes` and `packets`. An entry with both is refused, and an entry
 with neither has nothing to count. To stop on whichever comes first, write two
@@ -47,6 +48,46 @@ above) is dropped rather than announcing the limit again.
 per path, each with its own budget, so it is a megabyte in each direction rather
 than a megabyte between them, and `packets=100` the same way. Position matters
 too: before a `compress` stage it caps the payload, after it caps the wire.
+
+## Drawing the limit
+
+`bytes` and `packets` also take two forms that are settled when the pipeline is
+built rather than written down, for testing what a transfer does when it ends
+somewhere you did not pick.
+
+| Form               | The limit                                                 |
+| ------------------ | --------------------------------------------------------- |
+| `bytes=1KiB..1MiB` | Drawn uniformly in that window, inclusive at both ends    |
+| `bytes=25%`        | The chance of stopping at each byte. Also `1/4` or `0.25` |
+
+```console
+$ tocat tcp:host:9000 limit,bytes=1KiB..1MiB file:sample.bin
+$ tocat tcp:host:9000 limit,bytes=0.1% file:sample.bin
+$ tocat udp-listen:9000 limit,packets=100..1000 file:capture.bin
+```
+
+A rate is per byte rather than per chunk, so it does not move with
+[`buffer-size`](../buffers.md) or with how the peer happened to write: four
+writes of one byte and one write of four stop in the same place under the same
+seed. It has no fixed stopping point, so a short transfer often finishes
+untouched. That is the shape of the thing rather than a miss, and the way to use
+it is to run the same command many times.
+
+Either form names the seed it came from in the halt line:
+
+```
+limit: limit of 651KiB reached at 651KiB (seed=1774028891573910000)
+```
+
+Give that number back as `seed` to draw the same limit again:
+
+```console
+$ tocat tcp:host:9000 limit,bytes=1KiB..1MiB,seed=1774028891573910000 file:sample.bin
+```
+
+Without `seed` the number is taken from the clock and reported, so a run is
+reproducible after the fact as well as before it. A seed draws the same limit on
+any machine running the same tocat release.
 
 ## The crossing chunk
 
