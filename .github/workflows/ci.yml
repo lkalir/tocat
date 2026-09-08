@@ -148,10 +148,20 @@ jobs:
       - name: Run interface tests
         if: ${{ !cancelled() }}
         run: |
-          sudo capsh \
+          # The device node only exists once the module is loaded, and a runner
+          # image that has not needed it yet will not have loaded it.
+          sudo modprobe tun
+
+          # sudo discards PATH: the sudoers file uses env_reset with a
+          # secure_path, so nix and the rest of the dev shell disappear. Passing
+          # the step's PATH and HOME back through env is more portable than
+          # sudo -E, which needs a SETENV tag the runner's sudoers need not
+          # grant. /usr/sbin is appended because that is where capsh lives and
+          # the step's own PATH is not guaranteed to include it.
+          sudo env "PATH=$PATH:/usr/sbin:/sbin" "HOME=$HOME" TOCAT_TEST_TUN=1 capsh \
             --caps="cap_net_admin+eip cap_setpcap,cap_setuid,cap_setgid+ep" \
             --keep=1 --user="$USER" --addamb=cap_net_admin -- -c \
-            'TOCAT_TEST_TUN=1 nix develop .#ci --command cargo nextest run --locked --profile ci --cargo-profile ci -p tocat-core --test tun'
+            'nix develop .#ci --command cargo nextest run --locked --profile ci --cargo-profile ci -p tocat-core --test tun'
 
       - name: Upload test results
         if: ${{ !cancelled() }}
