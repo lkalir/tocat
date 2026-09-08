@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.3.0] - 2026-09-08
+
+### ⚙️ Miscellaneous Tasks
+
+- Update Cargo.toml dependencies
 
 ## [0.2.0](https://github.com/lkalir/tocat/compare/tocat-wasm-shell-v0.1.0...tocat-wasm-shell-v0.2.0) - 2026-08-15
 
