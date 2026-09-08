@@ -426,14 +426,14 @@ impl Noise {
 
         // A psk goes into a numbered message, so psk3 needs a pattern that has
         // a third one. Only the X initiators do.
-        if let Some(index) = pattern.psk {
-            if u32::from(index) > u32::from(pattern.messages()) {
-                bail!(
-                    "pattern={name} has {} handshake messages, so psk{index} has no message to \
+        if let Some(index) = pattern.psk
+            && u32::from(index) > u32::from(pattern.messages())
+        {
+            bail!(
+                "pattern={name} has {} handshake messages, so psk{index} has no message to \
                      go in: psk3 needs xn, xk or xx",
-                    pattern.messages(),
-                );
-            }
+                pattern.messages(),
+            );
         }
 
         let mine = pattern.mine(listening);
@@ -967,10 +967,10 @@ impl AsyncRead for NoiseStream {
             this.read_need = LEN_PREFIX;
             this.received += 1;
 
-            if let Some(every) = this.rekey {
-                if this.received.is_multiple_of(every) {
-                    this.state.rekey_incoming();
-                }
+            if let Some(every) = this.rekey
+                && this.received.is_multiple_of(every)
+            {
+                this.state.rekey_incoming();
             }
         }
     }
@@ -1008,10 +1008,10 @@ impl AsyncWrite for NoiseStream {
         this.write_len = LEN_PREFIX + n;
         this.sent += 1;
 
-        if let Some(every) = this.rekey {
-            if this.sent.is_multiple_of(every) {
-                this.state.rekey_outgoing();
-            }
+        if let Some(every) = this.rekey
+            && this.sent.is_multiple_of(every)
+        {
+            this.state.rekey_outgoing();
         }
 
         // Reporting the plaintext consumed before the record has necessarily
