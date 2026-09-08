@@ -17,7 +17,7 @@ use std::num::NonZeroUsize;
 use tocat_api::{ByteSize, normalize};
 
 use crate::endpoint::{
-    EndpointSpec, LayerSpec, Noise, Proxy, Socks, Tls, Transport, Ws,
+    EndpointSpec, LayerSpec, Noise, Proxy, Socks, Tap, Tls, Transport, Tun, Ws,
     chan::Chan,
     exec::{Exec, System},
     file::File,
@@ -314,6 +314,8 @@ impl std::str::FromStr for EndpointSpec {
 
                 TcpListen::parse(body, rest.into_iter()).map(Transport::TcpListen)
             }
+            "tun" => Tun::parse(body, opts).map(Transport::Tun),
+            "tap" => Tap::parse(body, opts).map(Transport::Tap),
             "pty" => Pty::parse(body, opts).map(Transport::Pty),
             "ptyexec" => PtyExec::parse(body, opts).map(Transport::PtyExec),
             "socks5" | "socks" => {

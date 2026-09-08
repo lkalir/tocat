@@ -63,6 +63,7 @@ mod stream;
 mod sys;
 mod tcp;
 mod tty;
+mod tun;
 mod udp;
 mod unix;
 
@@ -93,6 +94,7 @@ pub use self::{
     sys::{PathGuard, size_if_pipe},
     tcp::{Tcp, TcpListen},
     tty::Tty,
+    tun::{Interface, Tap, Tun},
     udp::{Udp, UdpListen},
     unix::{
         Unix, UnixListen,
@@ -496,6 +498,8 @@ pub enum Transport {
         alias = "UDPCONNECT"
     )]
     Udp(Udp),
+    Tun(Tun),
+    Tap(Tap),
     #[serde(alias = "UDP-LISTEN", alias = "udplisten", alias = "UDPLISTEN")]
     UdpListen(UdpListen),
     #[serde(alias = "CHAN", alias = "channel", alias = "CHANNEL")]
@@ -528,6 +532,8 @@ impl Transport {
                 | Self::UnixSeqpacketListen(_)
                 | Self::UnixDgram(_)
                 | Self::UnixDgramListen(_)
+                | Self::Tun(_)
+                | Self::Tap(_)
         )
     }
 
@@ -561,6 +567,8 @@ impl Transport {
             Self::Pty(e) => e.label(),
             Self::PtyExec(e) => e.label(),
             Self::Tty(e) => e.label(),
+            Self::Tun(e) => e.label(),
+            Self::Tap(e) => e.label(),
             Self::Udp(e) => e.label(),
             Self::UdpListen(e) => e.label(),
             Self::Chan(e) => e.label(),
@@ -672,6 +680,11 @@ impl Transport {
             Self::Pty(e) => e.connect().await,
             Self::PtyExec(e) => e.connect().await,
             Self::Tty(e) => e.connect().await,
+            // Needs the copy buffer to open: the inteface mtu is checked
+            // against it, because a packet longer than the buffer is truncated
+            // rather than split.
+            Self::Tun(e) => e.connect(buffer).await,
+            Self::Tap(e) => e.connect(buffer).await,
             Self::Udp(e) => e.connect().await,
             Self::UdpListen(e) => e.connect().await,
             Self::Chan(e) => e.connect().await,

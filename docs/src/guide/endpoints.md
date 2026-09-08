@@ -28,6 +28,8 @@ removed for schemes and option keys. Values remain untouched.
 | [`unix-seqpacket-listen`](endpoints/unix-seqpacket.md) | `seqpacket-listen`           | datagrams | duplex  |
 | [`unix-dgram`](endpoints/unix-dgram.md)                | `unix-datagram`, `uds-dgram` | datagrams | duplex  |
 | [`unix-dgram-listen`](endpoints/unix-dgram.md)         | `unix-datagram-listen`       | datagrams | duplex  |
+| [`tun`](endpoints/tun.md)                              |                              | packets   | duplex  |
+| [`tap`](endpoints/tun.md)                              |                              | frames    | duplex  |
 | [`file`](endpoints/file.md)                            | `open`                       | bytes     | one way |
 | [`pipe`](endpoints/pipe.md)                            | `fifo`                       | bytes     | one way |
 | [`exec`](endpoints/exec.md)                            |                              | bytes     | duplex  |

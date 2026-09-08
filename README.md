@@ -37,6 +37,7 @@ socat. The currently supported sources and sinks are
 - [x] tls
 - [x] tls-listen
 - [x] tty
+- [x] TUN/TAP
 - [x] udp
 - [x] udp-listen
 - [x] unix

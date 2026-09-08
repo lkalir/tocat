@@ -300,6 +300,12 @@
           "$ref": "#/$defs/tty-endpoint"
         },
         {
+          "$ref": "#/$defs/tun-endpoint"
+        },
+        {
+          "$ref": "#/$defs/tap-endpoint"
+        },
+        {
           "$ref": "#/$defs/udp-endpoint"
         },
         {
@@ -3423,6 +3429,138 @@
         "name": {
           "type": "string",
           "description": "Custom display name for the endpoint."
+        }
+      }
+    },
+    "tun-endpoint": {
+      "title": "tun",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "tun",
+            "TUN"
+          ]
+        },
+        "device": {
+          "type": "string",
+          "maxLength": 15,
+          "description": "Interface to open, which carries IP packets, at layer 3. An interface that already exists is attached to, and one that does not is created; creating needs CAP_NET_ADMIN, while attaching to a persistent interface made with `ip tuntap add mode tun user $USER name NAME` does not. Omit to let the kernel choose a name, which is then logged. An interface tocat creates is not persistent and disappears when the relay ends; one made with `ip tuntap add` outlives it, along with its addresses and routes. Opening a tap interface as tun is refused by the kernel.",
+          "examples": [
+            "tun0"
+          ]
+        },
+        "up": {
+          "type": "boolean",
+          "description": "Bring the interface up, which needs CAP_NET_ADMIN. Unset means do not touch the interface state at all, which is what lets attaching to an interface somebody else already configured work without privilege; note that unset is not the same as false, which would bring the interface down and needs the same privilege. Setting ipv4 or ipv6 implies this, since an address on a down interface does nothing, and `up=false` takes that back."
+        },
+        "ipv4": {
+          "type": "string",
+          "description": "Address and prefix for the interface, as 10.10.0.1/24. Needs CAP_NET_ADMIN, and implies up. Mainly for an interface tocat creates: that interface does not exist before it is opened and is gone when the relay ends, so there is no moment at which `ip addr add` could reach it. For an interface made with `ip tuntap add`, address it there instead. Aliases address, addr, ip4.",
+          "examples": [
+            "10.10.0.1/24"
+          ]
+        },
+        "ipv6": {
+          "type": "string",
+          "description": "The same for IPv6, as fd00::1/64. One address: a second use replaces the first. Alias ip6.",
+          "examples": [
+            "fd00::1/64"
+          ]
+        },
+        "mtu": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Set the interface MTU, which needs CAP_NET_ADMIN. The MTU is read either way and checked against the copy buffer: a packet longer than the buffer is truncated rather than split, so an MTU above it is refused at startup rather than losing the tail of every large packet."
+        },
+        "packet-info": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep the four byte packet information header in front of each packet. Off by default, matching `ip tuntap add` without its `pi` flag, and it has to match how the interface was made."
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 0,
+          "description": "Not available here. A layer needs message boundaries it can keep and neither TLS nor Noise has them, so a layer over an interface is refused before anything opens."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name for this endpoint in logs and plugin instance names. Defaults to the scheme and the interface."
+        }
+      }
+    },
+    "tap-endpoint": {
+      "title": "tap",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "tap",
+            "TAP"
+          ]
+        },
+        "device": {
+          "type": "string",
+          "maxLength": 15,
+          "description": "Interface to open, which carries Ethernet frames, at layer 2. An interface that already exists is attached to, and one that does not is created; creating needs CAP_NET_ADMIN, while attaching to a persistent interface made with `ip tuntap add mode tap user $USER name NAME` does not. Omit to let the kernel choose a name, which is then logged. An interface tocat creates is not persistent and disappears when the relay ends; one made with `ip tuntap add` outlives it, along with its addresses and routes. Opening a tun interface as tap is refused by the kernel.",
+          "examples": [
+            "tap0"
+          ]
+        },
+        "up": {
+          "type": "boolean",
+          "description": "Bring the interface up, which needs CAP_NET_ADMIN. Unset means do not touch the interface state at all, which is what lets attaching to an interface somebody else already configured work without privilege; note that unset is not the same as false, which would bring the interface down and needs the same privilege. Setting ipv4 or ipv6 implies this, since an address on a down interface does nothing, and `up=false` takes that back."
+        },
+        "ipv4": {
+          "type": "string",
+          "description": "Address and prefix for the interface, as 10.10.0.1/24. Needs CAP_NET_ADMIN, and implies up. Mainly for an interface tocat creates: that interface does not exist before it is opened and is gone when the relay ends, so there is no moment at which `ip addr add` could reach it. For an interface made with `ip tuntap add`, address it there instead. Aliases address, addr, ip4.",
+          "examples": [
+            "10.10.0.1/24"
+          ]
+        },
+        "ipv6": {
+          "type": "string",
+          "description": "The same for IPv6, as fd00::1/64. One address: a second use replaces the first. Alias ip6.",
+          "examples": [
+            "fd00::1/64"
+          ]
+        },
+        "mac": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$",
+          "description": "Hardware address for the interface, as 02:00:00:00:00:01. Needs CAP_NET_ADMIN. A tap is given a random address when it is created, so an interface tocat creates has a different one on every run; setting this is how anything that keys on the address, such as a DHCP reservation or a firewall rule, keeps working across a restart. The low bit of the first octet must be clear, since a multicast address cannot be assigned to an interface. Aliases mac-addr, hwaddr.",
+          "examples": [
+            "02:00:00:00:00:01"
+          ]
+        },
+        "mtu": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Set the interface MTU, which needs CAP_NET_ADMIN. The MTU is read either way and checked against the copy buffer: a packet longer than the buffer is truncated rather than split, so an MTU above it is refused at startup rather than losing the tail of every large packet."
+        },
+        "packet-info": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep the four byte packet information header in front of each packet. Off by default, matching `ip tuntap add` without its `pi` flag, and it has to match how the interface was made."
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 0,
+          "description": "Not available here. A layer needs message boundaries it can keep and neither TLS nor Noise has them, so a layer over an interface is refused before anything opens."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name for this endpoint in logs and plugin instance names. Defaults to the scheme and the interface."
         }
       }
     },
