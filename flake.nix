@@ -173,6 +173,8 @@
           wasm-tools
           gh
           mkcert
+          just
+          just-lsp
 
           python3Packages.grip
           marksman
@@ -280,7 +282,6 @@
         };
 
         formatter = pkgs.nixpkgs-fmt;
-
       }
 
     );

@@ -136,6 +136,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: nix develop .#ci --command cargo nextest run --workspace --locked --profile ci --cargo-profile ci
 
+      # The tun and tap cases need CAP_NET_ADMIN to create an interface, and
+      # granting it to the whole suite would run every test privileged. capsh
+      # drops back to the normal user with that one capability in the ambient
+      # set, which is what makes the test binary inherit it across the execs
+      # that nix, cargo and nextest add in between.
+      #
+      # TOCAT_TEST_TUN turns the cases' own skip into a failure, so a runner
+      # without /dev/net/tun is a red build rather than a green one that tested
+      # nothing.
+      - name: Run interface tests
+        if: ${{ !cancelled() }}
+        run: |
+          sudo capsh \
+            --caps="cap_net_admin+eip cap_setpcap,cap_setuid,cap_setgid+ep" \
+            --keep=1 --user="$USER" --addamb=cap_net_admin -- -c \
+            'TOCAT_TEST_TUN=1 nix develop .#ci --command cargo nextest run --locked --profile ci --cargo-profile ci -p tocat-core --test tun'
+
       - name: Upload test results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
