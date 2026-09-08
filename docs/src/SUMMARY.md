@@ -9,6 +9,7 @@
 - [Endpoints](guide/endpoints.md)
   - [exec and system](guide/endpoints/exec.md)
   - [file](guide/endpoints/file.md)
+  - [noise and noise-listen](guide/endpoints/noise.md)
   - [pipe](guide/endpoints/pipe.md)
   - [proxy and socks5](guide/endpoints/proxy.md)
   - [pty and pty-exec](guide/endpoints/pty.md)

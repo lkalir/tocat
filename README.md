@@ -25,6 +25,7 @@ socat. The currently supported sources and sinks are
 - [x] abstract (as `@name` on any unix scheme)
 - [x] exec
 - [x] file
+- [x] noise
 - [x] pipe / fifo
 - [x] proxy (HTTP CONNECT)
 - [x] pty

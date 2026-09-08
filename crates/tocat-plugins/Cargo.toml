@@ -37,7 +37,8 @@ hex = { version = "0.4.3", optional = true }
 kuznyechik = { version = "0.9.0", optional = true }
 magma = { version = "0.10.0", optional = true }
 md-5 = { version = "0.11.0", optional = true }
-mgm = { version = "0.5.0-pre.1", optional = true }
+# TODO: uncomment when mgm gets updated
+# mgm = { version = "0.5.0-pre.", optional = true }
 ocb3 = { version = "0.2.0", optional = true }
 ofb = { version = "0.7.1", optional = true }
 rand = { version = "0.10.2", default-features = false, optional = true }
@@ -98,7 +99,8 @@ encrypt = [
   "dep:hex",
   "dep:kuznyechik",
   "dep:magma",
-  "dep:mgm",
+  # TODO: uncomment when mgm gets updated
+  # "dep:mgm",
   "dep:ocb3",
   "dep:ofb",
   "dep:rc4",

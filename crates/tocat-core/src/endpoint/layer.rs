@@ -24,6 +24,7 @@
 //! `[Tls, Ws]`, so `wrap_client` runs in order and each layer wraps what the
 //! one below it produced.
 
+pub(in crate::endpoint) mod noise;
 pub(in crate::endpoint) mod proxy;
 pub(in crate::endpoint) mod socks;
 mod tls;
@@ -33,6 +34,7 @@ use anyhow::bail;
 use serde::{Deserialize, Serialize};
 
 pub use self::{
+    noise::{Cipher, Handshake, Hash, KeyFormat, Noise, Static},
     proxy::Proxy,
     socks::Socks,
     tls::{ClientAuth, Tls, Verify},
@@ -43,6 +45,7 @@ use crate::endpoint::EndpointStream;
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LayerSpec {
+    Noise(Noise),
     Proxy(Proxy),
     #[serde(rename = "socks5")]
     Socks(Socks),
@@ -59,7 +62,10 @@ impl LayerSpec {
         match self {
             // A tunnel is transparent: what comes out is what went in.
             LayerSpec::Proxy(_) | LayerSpec::Socks(_) => below,
-            LayerSpec::Tls(_) => false,
+            // Noise messages are discrete, but a record here is a buffer's
+            // worth of whatever was written rather than an application message,
+            // so this fuses for the same reason TLS does.
+            LayerSpec::Noise(_) | LayerSpec::Tls(_) => false,
             // Preserve: one message in is one message out, which is the whole
             // reason to put this over a byte transport.
             LayerSpec::Ws(_) => true,
@@ -75,7 +81,7 @@ impl LayerSpec {
         match self {
             LayerSpec::Proxy(proxy) => target_host(&proxy.target),
             LayerSpec::Socks(socks) => target_host(&socks.target),
-            LayerSpec::Tls(_) | LayerSpec::Ws(_) => below,
+            LayerSpec::Noise(_) | LayerSpec::Tls(_) | LayerSpec::Ws(_) => below,
         }
     }
 
@@ -86,6 +92,7 @@ impl LayerSpec {
         listening: bool,
     ) -> anyhow::Result<()> {
         match self {
+            LayerSpec::Noise(noise) => noise.check(below_is_datagram, listening),
             LayerSpec::Proxy(proxy) => proxy.check(below_is_datagram, listening),
             LayerSpec::Socks(socks) => socks.check(below_is_datagram, listening),
             LayerSpec::Tls(tls) => tls.check(below_is_datagram, listening),
@@ -101,6 +108,7 @@ impl LayerSpec {
         host: &str,
     ) -> anyhow::Result<EndpointStream> {
         match self {
+            LayerSpec::Noise(noise) => noise.wrap_client(stream, host).await,
             LayerSpec::Proxy(proxy) => proxy.wrap_client(stream).await,
             LayerSpec::Socks(socks) => socks.wrap_client(stream).await,
             LayerSpec::Tls(tls) => tls.wrap_client(stream, host).await,
@@ -117,6 +125,7 @@ impl LayerSpec {
             LayerSpec::Proxy(_) | LayerSpec::Socks(_) => {
                 bail!("a proxy layer cannot accept a connection")
             }
+            LayerSpec::Noise(noise) => noise.wrap_server(stream).await,
             LayerSpec::Tls(tls) => tls.wrap_server(stream).await,
             LayerSpec::Ws(ws) => ws.wrap_server(stream).await,
         }

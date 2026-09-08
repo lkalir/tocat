@@ -17,7 +17,7 @@ use std::num::NonZeroUsize;
 use tocat_api::{ByteSize, normalize};
 
 use crate::endpoint::{
-    EndpointSpec, LayerSpec, Proxy, Socks, Tls, Transport, Ws,
+    EndpointSpec, LayerSpec, Noise, Proxy, Socks, Tls, Transport, Ws,
     chan::Chan,
     exec::{Exec, System},
     file::File,
@@ -54,6 +54,22 @@ fn split_tls<'a>(
     }
 
     Ok((rest, tls))
+}
+
+/// The same as [split_tls], for the Noise layer
+fn split_noise<'a>(
+    opts: impl Iterator<Item = Opt<'a>>,
+) -> Result<(Vec<Opt<'a>>, Noise), ParseEndpointError> {
+    let mut noise = Noise::default();
+    let mut rest = Vec::new();
+
+    for opt in opts {
+        if !noise.option(&opt)? {
+            rest.push(opt);
+        }
+    }
+
+    Ok((rest, noise))
 }
 
 /// The same as [split_tls], for the WebSocket layer
@@ -285,6 +301,18 @@ impl std::str::FromStr for EndpointSpec {
                 layers.push(LayerSpec::Proxy(proxy));
 
                 Tcp::parse(addr, rest.into_iter()).map(Transport::Tcp)
+            }
+            "noise" | "noiseconnect" => {
+                let (rest, noise) = split_noise(opts)?;
+                layers.push(LayerSpec::Noise(noise));
+
+                Tcp::parse(body, rest.into_iter()).map(Transport::Tcp)
+            }
+            "noiselisten" => {
+                let (rest, noise) = split_noise(opts)?;
+                layers.push(LayerSpec::Noise(noise));
+
+                TcpListen::parse(body, rest.into_iter()).map(Transport::TcpListen)
             }
             "pty" => Pty::parse(body, opts).map(Transport::Pty),
             "ptyexec" => PtyExec::parse(body, opts).map(Transport::PtyExec),

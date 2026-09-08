@@ -66,8 +66,9 @@ message it delivers is one the peer sent whole.
 
 An endpoint is a transport and, optionally, handshakes stacked over it. A
 transport opens a connection; a layer takes one and returns another.
-[`tls`](endpoints/tls.md) is the first of them, and proxy CONNECT, SOCKS and
-WebSocket are the same shape.
+[`tls`](endpoints/tls.md) is the first of them, and
+[`noise`](endpoints/noise.md), proxy CONNECT, SOCKS and WebSocket are the same
+shape.
 
 The command line spells a common stack as a single scheme, so `tls:host:443` is
 a TCP transport with one TLS layer. A config file can write either that or the

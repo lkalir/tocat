@@ -75,7 +75,10 @@ pub use self::{
     datagram::Demux,
     exec::{Exec, System},
     file::File,
-    layer::{ClientAuth, LayerSpec, Proxy, Socks, Tls, Verify, Ws},
+    layer::{
+        Cipher, ClientAuth, Handshake, Hash, KeyFormat, LayerSpec, Noise, Proxy, Socks, Static,
+        Tls, Verify, Ws,
+    },
     parse::ParseEndpointError,
     pipe::Pipe,
     pty::{Pty, PtyExec},

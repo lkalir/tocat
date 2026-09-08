@@ -351,6 +351,9 @@
       "description": "A handshake over a byte stream. Only stream transports can carry one: a layer over udp or a datagram socket is refused before anything is opened.",
       "oneOf": [
         {
+          "$ref": "#/$defs/noise-layer"
+        },
+        {
           "$ref": "#/$defs/proxy-layer"
         },
         {
@@ -363,6 +366,95 @@
           "$ref": "#/$defs/ws-layer"
         }
       ]
+    },
+    "noise-layer": {
+      "title": "noise",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "pattern"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "noise"
+          ]
+        },
+        "pattern": {
+          "type": "string",
+          "pattern": "^[NnKkXxIi][NnKkXx](psk[0-3])?$",
+          "description": "The handshake, named as the Noise specification names it, with any pre-shared key modifier attached: xx, nnpsk0, xxpsk3. The first letter is the dialling side's static key and the second the listening side's. N is no static key, K is one the other side already holds, X is one sent during the handshake, and I is one sent in the first message, which only the dialling side can do. So a side needs key when its own letter is K, X or I, and needs peer when the other side's letter is K. psk0 to psk3 place the shared secret in that numbered message; psk3 needs a three message pattern, which means xn, xk or xx. Required: the only pattern that needs no key material is the one that proves nothing, so there is no default worth guessing."
+        },
+        "cipher": {
+          "type": "string",
+          "enum": [
+            "chachapoly",
+            "aesgcm"
+          ],
+          "default": "chachapoly",
+          "description": "The AEAD, the CIPHER of the Noise protocol name. Both ends must be set the same: Noise negotiates nothing, so a mismatch is a failed handshake rather than a fallback."
+        },
+        "hash": {
+          "type": "string",
+          "enum": [
+            "blake2s",
+            "blake2b",
+            "sha256",
+            "sha512"
+          ],
+          "default": "blake2s",
+          "description": "The hash, the HASH of the Noise protocol name. Both ends must be set the same. The DH is always 25519."
+        },
+        "psk": {
+          "type": "string",
+          "description": "The 32 byte shared secret for a psk pattern, encoded as key-format says. psk, psk-file and psk-env are alternatives."
+        },
+        "psk-file": {
+          "type": "string",
+          "description": "The shared secret, read from a file. Preferred over psk, which is visible to anything that can read the process list."
+        },
+        "psk-env": {
+          "type": "string",
+          "description": "The name of an environment variable holding the shared secret."
+        },
+        "key": {
+          "type": "string",
+          "description": "This side's 32 byte X25519 static private key, needed whenever this side's letter in the pattern is K, X or I, encoded as key-format says. key, key-file and key-env are alternatives."
+        },
+        "key-file": {
+          "type": "string",
+          "description": "The static private key, read from a file. Preferred over key, which is visible to anything that can read the process list."
+        },
+        "key-env": {
+          "type": "string",
+          "description": "The name of an environment variable holding the static private key."
+        },
+        "key-format": {
+          "type": "string",
+          "enum": [
+            "hex",
+            "base64",
+            "raw"
+          ],
+          "default": "hex",
+          "description": "How psk, key and peer are written. Whitespace is ignored in hex and base64, so a key file with a trailing newline reads as what it looks like. raw is the bytes themselves and only makes sense for a file."
+        },
+        "peer": {
+          "type": "string",
+          "description": "The peer's expected 32 byte X25519 static public key. Required when the other side's letter is K, since the handshake cannot begin without it. Where that letter is X or I the key arrives during the handshake and this is a pin checked against it; without one, those patterns encrypt but authenticate nothing. Alias peer-key."
+        },
+        "prologue": {
+          "type": "string",
+          "description": "Arbitrary text mixed into the handshake hash. Both sides must write the same thing or the handshake fails, which makes it a cheap way to bind a session to context agreed elsewhere."
+        },
+        "rekey": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Rekey each direction's cipher after this many records, bounding how much data sits under one key. Both sides count the same records, so nothing is signalled. Not about nonce exhaustion, which a 64 bit counter does not reach."
+        }
+      }
     },
     "ws-layer": {
       "title": "ws",
