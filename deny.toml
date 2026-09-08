@@ -3,6 +3,9 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained rather than vulnerable, and the advisory itself says no safe upgrade exists. It arrives three levels under tun-rs, through netconfig-rs and route_manager into netlink-packet-core, so there is nothing to pin here. It is a proc-macro, so it runs at build time and is not part of the shipped binary. Revisit when the netlink crates move to pastey." }
+]
 
 [licenses]
 version = 2
